@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -232,10 +232,12 @@ class OverlayWindow(QWidget):
         self.manager = manager
         self.settings = settings
         self._log_mode = False
+        self._anim: QPropertyAnimation | None = None
+        self._refresh_fingerprint: tuple = ()
         self._leave_timer = QTimer(self)
         self._leave_timer.setSingleShot(True)
         self._leave_timer.setInterval(400)
-        self._leave_timer.timeout.connect(self.hide)
+        self._leave_timer.timeout.connect(self._animated_hide)
         self._setup_window()
         self._build_ui()
         self._settings_dialog = SettingsDialog(self.settings, checker)
@@ -379,38 +381,37 @@ class OverlayWindow(QWidget):
                 self._sync_manager.push_now()
 
     def _refresh(self):
-        while self._list_layout.count() > 1:
-            item = self._list_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
         todos = self.manager.get_all()
         incomplete = [t for t in todos if not t.completed]
-        complete = [t for t in todos if t.completed]
+        complete   = [t for t in todos if t.completed]
+        display    = complete if self._log_mode else (incomplete + complete)
+        empty_text = "완료된 항목이 없습니다" if self._log_mode else "할 일이 없습니다 🎉"
 
-        if self._log_mode:
-            display = complete
-            empty_text = "완료된 항목이 없습니다"
-        else:
-            display = incomplete + complete
-            empty_text = "할 일이 없습니다 🎉"
+        # 내용이 바뀐 경우에만 위젯 재구성 (불필요한 rebuild 방지)
+        fingerprint = tuple((t.id, t.completed, t.text) for t in display)
+        counts_only = fingerprint == self._refresh_fingerprint
+        if not counts_only:
+            self._refresh_fingerprint = fingerprint
+            while self._list_layout.count() > 1:
+                item = self._list_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
 
-        self._empty_lbl.setText(empty_text)
+            self._empty_lbl.setText(empty_text)
+            if not display:
+                self._empty_lbl.show()
+                self._scroll.hide()
+            else:
+                self._empty_lbl.hide()
+                self._scroll.show()
+                for todo in display:
+                    w = _TodoItemWidget(todo, self.manager, self._on_todo_changed)
+                    self._list_layout.insertWidget(self._list_layout.count() - 1, w)
+            self.adjustSize()
 
-        if not display:
-            self._empty_lbl.show()
-            self._scroll.hide()
-        else:
-            self._empty_lbl.hide()
-            self._scroll.show()
-            for todo in display:
-                w = _TodoItemWidget(todo, self.manager, self._on_todo_changed)
-                self._list_layout.insertWidget(self._list_layout.count() - 1, w)
-
-        done = len(complete)
+        done  = len(complete)
         total = len(todos)
         self._count_lbl.setText(f"{done}/{total} 완료" if total else "")
-        self.adjustSize()
 
     def _on_todo_changed(self):
         self._refresh()
@@ -447,15 +448,59 @@ class OverlayWindow(QWidget):
         self._settings_dialog.show_centered()
         self._leave_timer.stop()
 
+    # ── 애니메이션 ──────────────────────────────────────────────────────────
+
+    def _stop_anim(self):
+        if self._anim and self._anim.state() == QPropertyAnimation.State.Running:
+            self._anim.stop()
+
+    def _animated_show(self):
+        self._stop_anim()
+        self._refresh()
+        super().show()
+        self.activateWindow()
+        self.raise_()
+        self._input.setFocus()
+
+        if not self.settings.animation:
+            self.move(12, 12)
+            return
+
+        h = self.sizeHint().height() or self.height() or 300
+        self._anim = QPropertyAnimation(self, b"pos", self)
+        self._anim.setDuration(self.settings.anim_duration)
+        self._anim.setStartValue(QPoint(12, -h))
+        self._anim.setEndValue(QPoint(12, 12))
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.start()
+
+    def _animated_hide(self):
+        self._stop_anim()
+        if not self.isVisible():
+            return
+
+        if not self.settings.animation:
+            super().hide()
+            return
+
+        self._leave_timer.stop()
+        dur = max(60, self.settings.anim_duration - 40)
+        h   = self.height() or 300
+        self._anim = QPropertyAnimation(self, b"pos", self)
+        self._anim.setDuration(dur)
+        self._anim.setStartValue(QPoint(12, 12))
+        self._anim.setEndValue(QPoint(12, -h))
+        self._anim.setEasingCurve(QEasingCurve.Type.InCubic)
+        self._anim.finished.connect(super().hide)
+        self._anim.start()
+
+    # ── toggle / events ─────────────────────────────────────────────────────
+
     def toggle(self):
         if self.isVisible():
-            self.hide()
+            self._animated_hide()
         else:
-            self._refresh()
-            self.show()
-            self.activateWindow()
-            self.raise_()
-            self._input.setFocus()
+            self._animated_show()
 
     def enterEvent(self, event):
         self._leave_timer.stop()
@@ -467,5 +512,5 @@ class OverlayWindow(QWidget):
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
-            self.hide()
+            self._animated_hide()
         super().keyPressEvent(event)

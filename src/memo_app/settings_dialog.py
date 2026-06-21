@@ -1,6 +1,7 @@
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -484,6 +485,42 @@ class _UIPage(QWidget):
         lay.addWidget(self._delay_slider)
         lay.addWidget(_hint("마우스가 오버레이를 벗어난 후 창이 닫히기까지의 지연 시간입니다. (100 – 2000 ms)"))
 
+        lay.addSpacing(8)
+
+        # 애니메이션 활성화 체크박스
+        anim_row = QHBoxLayout()
+        anim_cb = QCheckBox("창 열기/닫기 애니메이션 사용")
+        anim_cb.setChecked(settings.animation)
+        anim_cb.setStyleSheet("""
+QCheckBox { color: rgba(255,255,255,170); font-size: 13px; }
+QCheckBox::indicator { width:16px; height:16px; border-radius:4px;
+    border:2px solid rgba(255,255,255,120); background:transparent; }
+QCheckBox::indicator:checked { background:#4caf50; border-color:#4caf50; }
+""")
+        anim_row.addWidget(anim_cb)
+        anim_row.addStretch()
+        lay.addLayout(anim_row)
+
+        # 애니메이션 속도 슬라이더
+        dur_row = QHBoxLayout()
+        dur_row.addWidget(_label("애니메이션 속도"))
+        dur_row.addStretch()
+        self._dur_val = QLabel(f"{settings.anim_duration} ms")
+        self._dur_val.setStyleSheet(_VALUE_LABEL)
+        dur_row.addWidget(self._dur_val)
+        lay.addLayout(dur_row)
+
+        self._dur_slider = QSlider(Qt.Orientation.Horizontal)
+        self._dur_slider.setRange(80, 600)
+        self._dur_slider.setValue(settings.anim_duration)
+        self._dur_slider.setStyleSheet(_SLIDER_STYLE)
+        self._dur_slider.setEnabled(settings.animation)
+        self._dur_slider.valueChanged.connect(self._on_dur)
+        lay.addWidget(self._dur_slider)
+        lay.addWidget(_hint("창이 나타나고 사라질 때의 애니메이션 지속 시간입니다. (80 – 600 ms)"))
+
+        anim_cb.stateChanged.connect(lambda: self._on_anim(anim_cb.isChecked()))
+
         lay.addStretch()
 
         self._settings = settings
@@ -503,6 +540,14 @@ class _UIPage(QWidget):
         self._settings._save()
         if self.leave_delay_changed:
             self.leave_delay_changed(v)
+
+    def _on_anim(self, enabled: bool):
+        self._settings.animation = enabled
+        self._dur_slider.setEnabled(enabled)
+
+    def _on_dur(self, v: int):
+        self._dur_val.setText(f"{v} ms")
+        self._settings.anim_duration = v
 
 
 # ── Main dialog ───────────────────────────────────────────────────────────────

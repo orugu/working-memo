@@ -1,6 +1,6 @@
 [project]
 name = "working-memo"
-version = "1.0.0"
+version = "1.0.1"
 description = "Ctrl + 좌측 상단 코너 트리거 오버레이 할 일 목록 앱"
 requires-python = ">=3.11"
 dependencies = [

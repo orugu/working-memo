@@ -15,9 +15,11 @@ _DEFAULTS = {
     "app_username": "",
     "app_password": "",
     # ── UI ───────────────────────────────────────────────────────────────
-    "corner_size":   20,
-    "overlay_width": 380,
-    "leave_delay":   400,
+    "corner_size":    20,
+    "overlay_width":  380,
+    "leave_delay":    400,
+    "animation":      True,
+    "anim_duration":  220,
 }
 
 
@@ -125,6 +127,22 @@ class SettingsManager:
     @corner_size.setter
     def corner_size(self, v: int):
         self._data["corner_size"] = max(5, min(100, v)); self._save()
+
+    @property
+    def animation(self) -> bool:
+        return bool(self._data.get("animation", True))
+
+    @animation.setter
+    def animation(self, v: bool):
+        self._data["animation"] = v; self._save()
+
+    @property
+    def anim_duration(self) -> int:
+        return int(self._data.get("anim_duration", 220))
+
+    @anim_duration.setter
+    def anim_duration(self, v: int):
+        self._data["anim_duration"] = max(80, min(600, v)); self._save()
 
     # display_name / email 은 하위호환용 alias
     @property

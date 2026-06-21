@@ -1,0 +1,471 @@
+from datetime import datetime
+
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
+
+from .settings_dialog import SettingsDialog
+from .settings_manager import SettingsManager
+from .sync_manager import SyncState
+from .todo_manager import Todo, TodoManager
+
+
+def _fmt(iso: str | None) -> str:
+    if not iso:
+        return ""
+    try:
+        return datetime.fromisoformat(iso).strftime("%m/%d %H:%M")
+    except Exception:
+        return iso
+
+
+_CONTAINER_STYLE = """
+QFrame#container {
+    background-color: rgba(14, 14, 24, 238);
+    border-radius: 16px;
+    border: 1px solid rgba(255, 255, 255, 28);
+}
+"""
+
+_INPUT_STYLE = """
+QLineEdit {
+    background-color: rgba(255, 255, 255, 14);
+    border: 1px solid rgba(255, 255, 255, 30);
+    border-radius: 8px;
+    color: rgba(255, 255, 255, 220);
+    padding: 8px 12px;
+    font-size: 13px;
+}
+QLineEdit:focus {
+    border-color: rgba(100, 160, 255, 190);
+    background-color: rgba(255, 255, 255, 20);
+}
+QLineEdit[placeholderText] {
+    color: rgba(255,255,255,55);
+}
+"""
+
+_ADD_BTN_STYLE = """
+QPushButton {
+    background-color: rgba(100, 160, 255, 200);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 13px;
+    padding: 0 14px;
+}
+QPushButton:hover { background-color: rgba(120, 180, 255, 220); }
+QPushButton:pressed { background-color: rgba(80, 140, 230, 220); }
+"""
+
+_CLOSE_BTN_STYLE = """
+QPushButton {
+    background: rgba(255,255,255,14);
+    color: rgba(255,255,255,160);
+    border: none;
+    border-radius: 12px;
+    font-size: 12px;
+}
+QPushButton:hover { background: #e05050; color: white; }
+"""
+
+_ICON_BTN_STYLE = """
+QPushButton {
+    background: rgba(255,255,255,14);
+    color: rgba(255,255,255,160);
+    border: none;
+    border-radius: 12px;
+    font-size: 12px;
+}
+QPushButton:hover { background: rgba(255,255,255,35); color: white; }
+QPushButton:checked { background: rgba(100,160,255,180); color: white; }
+"""
+
+_SCROLL_STYLE = """
+QScrollArea { background: transparent; border: none; }
+QScrollBar:vertical {
+    background: rgba(255,255,255,8);
+    width: 6px;
+    border-radius: 3px;
+    margin: 0;
+}
+QScrollBar::handle:vertical {
+    background: rgba(255,255,255,55);
+    border-radius: 3px;
+    min-height: 20px;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+"""
+
+_ITEM_STYLE = """
+QFrame#item {
+    background-color: rgba(255, 255, 255, 8);
+    border-radius: 8px;
+}
+QFrame#item:hover { background-color: rgba(255, 255, 255, 16); }
+"""
+
+_CB_STYLE = """
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    border: 2px solid rgba(255,255,255,120);
+    background: transparent;
+}
+QCheckBox::indicator:checked {
+    background-color: #4caf50;
+    border-color: #4caf50;
+}
+QCheckBox::indicator:unchecked:hover {
+    border-color: rgba(100,160,255,200);
+}
+"""
+
+_DEL_BTN_STYLE = """
+QPushButton {
+    background: transparent;
+    color: rgba(255,255,255,60);
+    border: none;
+    font-size: 11px;
+}
+QPushButton:hover { color: #e05050; }
+"""
+
+
+class _TodoItemWidget(QFrame):
+    def __init__(self, todo: Todo, manager: TodoManager, on_change):
+        super().__init__()
+        self.todo = todo
+        self.manager = manager
+        self.on_change = on_change
+        self.setObjectName("item")
+        self.setStyleSheet(_ITEM_STYLE)
+        self._build()
+
+    def _build(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 8, 10, 8)
+        outer.setSpacing(4)
+
+        # Top row
+        row = QHBoxLayout()
+        row.setSpacing(8)
+
+        cb = QCheckBox()
+        cb.setChecked(self.todo.completed)
+        cb.setStyleSheet(_CB_STYLE)
+        cb.stateChanged.connect(self._toggle)
+
+        text = QLabel(self.todo.text)
+        text.setWordWrap(True)
+        text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        if self.todo.completed:
+            text.setStyleSheet("color: rgba(255,255,255,80); text-decoration: line-through; font-size: 13px;")
+        else:
+            text.setStyleSheet("color: rgba(255,255,255,210); font-size: 13px;")
+
+        del_btn = QPushButton("✕")
+        del_btn.setFixedSize(22, 22)
+        del_btn.setStyleSheet(_DEL_BTN_STYLE)
+        del_btn.clicked.connect(self._delete)
+
+        row.addWidget(cb)
+        row.addWidget(text, 1)
+        row.addWidget(del_btn)
+
+        # Timestamp row
+        ts_row = QHBoxLayout()
+        ts_row.setContentsMargins(24, 0, 0, 0)
+        ts_row.setSpacing(0)
+
+        created = QLabel(f"추가: {_fmt(self.todo.created_at)}")
+        created.setStyleSheet("color: rgba(255,255,255,70); font-size: 10px;")
+        ts_row.addWidget(created)
+
+        if self.todo.completed and self.todo.completed_at:
+            sep = QLabel("  •  ")
+            sep.setStyleSheet("color: rgba(255,255,255,40); font-size: 10px;")
+            done = QLabel(f"완료: {_fmt(self.todo.completed_at)}")
+            done.setStyleSheet("color: rgba(100,210,120,160); font-size: 10px;")
+            ts_row.addWidget(sep)
+            ts_row.addWidget(done)
+
+        ts_row.addStretch()
+
+        outer.addLayout(row)
+        outer.addLayout(ts_row)
+
+    def _toggle(self):
+        self.manager.toggle_complete(self.todo.id)
+        self.on_change()
+
+    def _delete(self):
+        self.manager.delete(self.todo.id)
+        self.on_change()
+
+
+_SYNC_COLORS = {
+    SyncState.SYNCED:     ("●", "rgba(100,210,120,220)"),
+    SyncState.SYNCING:    ("●", "rgba(100,160,255,220)"),
+    SyncState.PENDING:    ("●", "rgba(255,200,60,220)"),
+    SyncState.OFFLINE:    ("●", "rgba(160,160,160,200)"),
+    SyncState.AUTH_ERROR: ("●", "rgba(220,80,80,220)"),
+}
+
+
+class OverlayWindow(QWidget):
+    def __init__(self, manager: TodoManager, settings: SettingsManager):
+        super().__init__()
+        self.manager = manager
+        self.settings = settings
+        self._log_mode = False
+        self._leave_timer = QTimer(self)
+        self._leave_timer.setSingleShot(True)
+        self._leave_timer.setInterval(400)
+        self._leave_timer.timeout.connect(self.hide)
+        self._setup_window()
+        self._build_ui()
+        self._settings_dialog = SettingsDialog(self.settings)
+        self._settings_dialog.set_todo_manager(self.manager)
+        self._settings_dialog.set_overlay_callbacks(
+            on_width=self._apply_width,
+            on_delay=lambda v: self._leave_timer.setInterval(v),
+        )
+
+    def _setup_window(self):
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedWidth(380)
+        self.move(12, 12)
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+
+        self._container = QFrame()
+        self._container.setObjectName("container")
+        self._container.setStyleSheet(_CONTAINER_STYLE)
+        root.addWidget(self._container)
+
+        layout = QVBoxLayout(self._container)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        # ── Header ──────────────────────────────────────────────────────────
+        hdr = QHBoxLayout()
+        title = QLabel("📝  Working Memo")
+        title.setStyleSheet("color: white; font-size: 15px; font-weight: bold;")
+
+        self._count_lbl = QLabel("")
+        self._count_lbl.setStyleSheet("color: rgba(255,255,255,100); font-size: 11px;")
+
+        self._sync_dot = QLabel("●")
+        self._sync_dot.setToolTip("오프라인")
+        self._sync_dot.setStyleSheet("color: rgba(160,160,160,200); font-size: 10px;")
+
+        self._log_btn = QPushButton("📋")
+        self._log_btn.setFixedSize(24, 24)
+        self._log_btn.setStyleSheet(_ICON_BTN_STYLE)
+        self._log_btn.setCheckable(True)
+        self._log_btn.setToolTip("완료 로그")
+        self._log_btn.clicked.connect(self._toggle_log)
+
+        self._settings_btn = QPushButton("⚙")
+        self._settings_btn.setFixedSize(24, 24)
+        self._settings_btn.setStyleSheet(_ICON_BTN_STYLE)
+        self._settings_btn.setToolTip("설정")
+        self._settings_btn.clicked.connect(self._open_settings)
+
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(24, 24)
+        close_btn.setStyleSheet(_CLOSE_BTN_STYLE)
+        close_btn.clicked.connect(self.hide)
+
+        hdr.addWidget(title)
+        hdr.addStretch()
+        hdr.addWidget(self._sync_dot)
+        hdr.addSpacing(6)
+        hdr.addWidget(self._count_lbl)
+        hdr.addSpacing(8)
+        hdr.addWidget(self._log_btn)
+        hdr.addSpacing(4)
+        hdr.addWidget(self._settings_btn)
+        hdr.addSpacing(4)
+        hdr.addWidget(close_btn)
+
+        # ── Input row ────────────────────────────────────────────────────────
+        self._inp_container = QWidget()
+        inp_row = QHBoxLayout(self._inp_container)
+        inp_row.setContentsMargins(0, 0, 0, 0)
+        inp_row.setSpacing(8)
+
+        self._input = QLineEdit()
+        self._input.setPlaceholderText("새 할 일 입력 후 Enter…")
+        self._input.setStyleSheet(_INPUT_STYLE)
+        self._input.setFixedHeight(36)
+        self._input.returnPressed.connect(self._add)
+
+        add_btn = QPushButton("추가")
+        add_btn.setFixedHeight(36)
+        add_btn.setMinimumWidth(52)
+        add_btn.setStyleSheet(_ADD_BTN_STYLE)
+        add_btn.clicked.connect(self._add)
+
+        inp_row.addWidget(self._input, 1)
+        inp_row.addWidget(add_btn)
+
+        # ── Divider ──────────────────────────────────────────────────────────
+        div = QFrame()
+        div.setFrameShape(QFrame.Shape.HLine)
+        div.setMaximumHeight(1)
+        div.setStyleSheet("background-color: rgba(255,255,255,18); border: none;")
+
+        # ── Scroll area ──────────────────────────────────────────────────────
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setStyleSheet(_SCROLL_STYLE)
+        self._scroll.setMinimumHeight(120)
+        self._scroll.setMaximumHeight(460)
+
+        self._list_widget = QWidget()
+        self._list_widget.setStyleSheet("background: transparent;")
+        self._list_layout = QVBoxLayout(self._list_widget)
+        self._list_layout.setContentsMargins(0, 0, 4, 0)
+        self._list_layout.setSpacing(4)
+        self._list_layout.addStretch()
+
+        self._scroll.setWidget(self._list_widget)
+
+        # ── Empty state label ────────────────────────────────────────────────
+        self._empty_lbl = QLabel("할 일이 없습니다 🎉")
+        self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_lbl.setStyleSheet("color: rgba(255,255,255,50); font-size: 13px; padding: 24px 0;")
+
+        layout.addLayout(hdr)
+        layout.addWidget(self._inp_container)
+        layout.addWidget(div)
+        layout.addWidget(self._empty_lbl)
+        layout.addWidget(self._scroll)
+
+        self._sync_manager = None
+        self._refresh()
+
+    def _add(self):
+        text = self._input.text().strip()
+        if text:
+            self.manager.add(text)
+            self._input.clear()
+            self._refresh()
+            if self._sync_manager:
+                self._sync_manager.push_now()
+
+    def _refresh(self):
+        while self._list_layout.count() > 1:
+            item = self._list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        todos = self.manager.get_all()
+        incomplete = [t for t in todos if not t.completed]
+        complete = [t for t in todos if t.completed]
+
+        if self._log_mode:
+            display = complete
+            empty_text = "완료된 항목이 없습니다"
+        else:
+            display = incomplete + complete
+            empty_text = "할 일이 없습니다 🎉"
+
+        self._empty_lbl.setText(empty_text)
+
+        if not display:
+            self._empty_lbl.show()
+            self._scroll.hide()
+        else:
+            self._empty_lbl.hide()
+            self._scroll.show()
+            for todo in display:
+                w = _TodoItemWidget(todo, self.manager, self._on_todo_changed)
+                self._list_layout.insertWidget(self._list_layout.count() - 1, w)
+
+        done = len(complete)
+        total = len(todos)
+        self._count_lbl.setText(f"{done}/{total} 완료" if total else "")
+        self.adjustSize()
+
+    def _on_todo_changed(self):
+        self._refresh()
+        if self._sync_manager:
+            self._sync_manager.push_now()
+
+    def _toggle_log(self):
+        self._log_mode = self._log_btn.isChecked()
+        self._inp_container.setVisible(not self._log_mode)
+        self._refresh()
+
+    def set_sync_manager(self, sync_manager):
+        self._sync_manager = sync_manager
+        sync_manager.status_changed.connect(self._on_sync_status)
+        sync_manager.todos_refreshed.connect(self._refresh)
+        self._on_sync_status(sync_manager.state)
+
+    def _on_sync_status(self, state: str):
+        dot, color = _SYNC_COLORS.get(state, ("●", "rgba(160,160,160,200)"))
+        tooltips = {
+            SyncState.SYNCED:     "동기화됨",
+            SyncState.SYNCING:    "동기화 중...",
+            SyncState.PENDING:    "미동기화 항목 있음",
+            SyncState.OFFLINE:    "오프라인",
+            SyncState.AUTH_ERROR: "인증 오류",
+        }
+        self._sync_dot.setStyleSheet(f"color: {color}; font-size: 10px;")
+        self._sync_dot.setToolTip(tooltips.get(state, state))
+
+    def _apply_width(self, v: int):
+        self.setFixedWidth(v)
+
+    def _open_settings(self):
+        self._settings_dialog.show_centered()
+        self._leave_timer.stop()
+
+    def toggle(self):
+        if self.isVisible():
+            self.hide()
+        else:
+            self._refresh()
+            self.show()
+            self.activateWindow()
+            self.raise_()
+            self._input.setFocus()
+
+    def enterEvent(self, event):
+        self._leave_timer.stop()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._leave_timer.start()
+        super().leaveEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.hide()
+        super().keyPressEvent(event)

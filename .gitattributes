@@ -1,0 +1,12 @@
+# Default: LF everywhere
+* text=auto eol=lf
+
+# Windows batch scripts: CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binaries
+*.exe binary
+*.dll binary
+*.pyd binary
+*.dmg binary

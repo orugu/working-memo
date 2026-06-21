@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# PyInstaller build artifacts
+build/pyi-work/
+build/pyi-work-clean/
+build/MemoApp
+build/WorkingMemo
+build/*.log
+
+# Distribution / compiled output
+dist/
+
+# macOS artifacts
+__MACOSX/
+.DS_Store
+*.dmg
+*.app
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# uv
+.python-version
+
+# Claude Code workspace
+.claude/

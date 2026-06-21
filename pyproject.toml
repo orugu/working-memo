@@ -1,0 +1,27 @@
+[project]
+name = "working-memo"
+version = "1.0.0"
+description = "Ctrl + 좌측 상단 코너 트리거 오버레이 할 일 목록 앱"
+requires-python = ">=3.11"
+dependencies = [
+    "PySide6>=6.6.0",
+    "pynput>=1.7.6",
+    "platformdirs>=4.0.0",
+    "sqlalchemy>=2.0.51",
+    "psycopg2-binary>=2.9.12",
+]
+
+[project.scripts]
+working-memo = "memo_app.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/memo_app"]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.0.0",
+]

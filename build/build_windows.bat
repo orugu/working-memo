@@ -18,7 +18,7 @@ if "%IS_ANACONDA%"=="True" (
 )
 
 :: pyproject.toml 에서 버전 읽기
-for /f "tokens=*" %%v in ('".venv\Scripts\python.exe" -c "import tomllib; d=tomllib.loads(open(\"pyproject.toml\",\"rb\").read().decode()); print(d[\"project\"][\"version\"])"') do set VERSION=%%v
+for /f "tokens=*" %%v in ('".venv\Scripts\python.exe" -c "import tomllib; d=tomllib.load(open(\"pyproject.toml\",\"rb\")); print(d[\"project\"][\"version\"])"') do set VERSION=%%v
 if "%VERSION%"=="" (
     echo [ERROR] pyproject.toml 에서 버전을 읽지 못했습니다.
     exit /b 1

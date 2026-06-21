@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Generator
 
 from platformdirs import user_data_dir
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -46,6 +46,7 @@ class DatabaseManager:
         connect_args = {} if not db_host else {"connect_timeout": 5}
         engine = create_engine(url, echo=False, connect_args=connect_args)
         Base.metadata.create_all(engine)
+        self._migrate(engine)
         self._engine = engine
         self._Session = sessionmaker(bind=engine, expire_on_commit=False)
         self._connected = True
@@ -114,6 +115,17 @@ class DatabaseManager:
             raise
         finally:
             sess.close()
+
+    # ── 마이그레이션 ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _migrate(engine: Engine) -> None:
+        """새 컬럼 추가 (v1.0.2: parent_id)."""
+        with engine.connect() as conn:
+            cols = [c["name"] for c in inspect(engine).get_columns("todos")]
+            if "parent_id" not in cols:
+                conn.execute(text("ALTER TABLE todos ADD COLUMN parent_id VARCHAR(36)"))
+                conn.commit()
 
     # ── URL 빌더 ──────────────────────────────────────────────────────────
 

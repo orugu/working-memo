@@ -17,6 +17,7 @@ class Todo:
         completed: bool = False,
         synced: bool = False,
         deleted: bool = False,
+        parent_id: str | None = None,
     ):
         self.id = id or str(uuid.uuid4())
         self.text = text
@@ -26,6 +27,7 @@ class Todo:
         self.completed = completed
         self.synced = synced
         self.deleted = deleted
+        self.parent_id = parent_id
 
     def to_dict(self) -> dict:
         return {
@@ -37,6 +39,7 @@ class Todo:
             "completed": self.completed,
             "synced": self.synced,
             "deleted": self.deleted,
+            "parent_id": self.parent_id,
         }
 
     @classmethod
@@ -50,6 +53,7 @@ class Todo:
             completed=d.get("completed", False),
             synced=d.get("synced", False),
             deleted=d.get("deleted", False),
+            parent_id=d.get("parent_id"),
         )
 
 
@@ -84,9 +88,9 @@ class TodoManager:
 
     # ── 쓰기 ─────────────────────────────────────────────────────────────
 
-    def add(self, text: str) -> Todo:
+    def add(self, text: str, parent_id: str | None = None) -> Todo:
         with self._lock:
-            todo = Todo(text=text.strip())
+            todo = Todo(text=text.strip(), parent_id=parent_id)
             self._todos.append(todo)
             self._save()
             return todo
@@ -105,16 +109,23 @@ class TodoManager:
     def delete(self, todo_id: str):
         with self._lock:
             for todo in self._todos:
-                if todo.id == todo_id:
+                if (todo.id == todo_id or todo.parent_id == todo_id) and not todo.deleted:
                     todo.deleted = True
                     self._touch(todo)
-                    self._save()
-                    return
+            self._save()
 
     def delete_completed(self):
         with self._lock:
+            completed_top = {t.id for t in self._todos if t.completed and not t.deleted and not t.parent_id}
             for todo in self._todos:
-                if todo.completed and not todo.deleted:
+                if todo.deleted:
+                    continue
+                # 완료된 최상위 항목과 그 하위 항목 전체 삭제
+                if todo.id in completed_top or todo.parent_id in completed_top:
+                    todo.deleted = True
+                    self._touch(todo)
+                # 부모가 살아있어도 완료된 하위 항목 삭제
+                elif todo.parent_id and todo.completed:
                     todo.deleted = True
                     self._touch(todo)
             self._save()
@@ -173,6 +184,7 @@ class TodoManager:
                     local.completed_at = d.get("completed_at")
                     local.updated_at = d.get("updated_at") or local.updated_at
                     local.deleted = d.get("deleted", False)
+                    local.parent_id = d.get("parent_id")
                     local.synced = True
         self.path.write_text(
             json.dumps([t.to_dict() for t in self._todos], ensure_ascii=False, indent=2),

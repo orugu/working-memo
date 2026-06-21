@@ -34,8 +34,10 @@ class Todo(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed: Mapped[bool] = mapped_column(Boolean, default=False)
     deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    parent_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("todos.id"), nullable=True, index=True)
 
     user: Mapped["User | None"] = relationship("User", back_populates="todos")
+    children: Mapped[list["Todo"]] = relationship("Todo", foreign_keys="Todo.parent_id", lazy="select")
 
     def __repr__(self) -> str:
         return f"<Todo id={self.id!r} text={self.text!r} completed={self.completed}>"

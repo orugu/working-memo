@@ -144,23 +144,114 @@ QPushButton {
 QPushButton:hover { color: #e05050; }
 """
 
+_SUB_CB_STYLE = """
+QCheckBox::indicator {
+    width: 13px;
+    height: 13px;
+    border-radius: 3px;
+    border: 1.5px solid rgba(255,255,255,80);
+    background: transparent;
+}
+QCheckBox::indicator:checked {
+    background-color: rgba(76,175,80,190);
+    border-color: rgba(76,175,80,190);
+}
+QCheckBox::indicator:unchecked:hover {
+    border-color: rgba(100,160,255,200);
+}
+"""
 
-class _TodoItemWidget(QFrame):
+_SUB_INPUT_STYLE = """
+QLineEdit {
+    background-color: rgba(255, 255, 255, 10);
+    border: 1px solid rgba(255, 255, 255, 22);
+    border-radius: 6px;
+    color: rgba(255, 255, 255, 200);
+    padding: 5px 10px;
+    font-size: 12px;
+}
+QLineEdit:focus {
+    border-color: rgba(100, 160, 255, 160);
+}
+"""
+
+_SUB_ADD_BTN_STYLE = """
+QPushButton {
+    background-color: rgba(100, 160, 255, 170);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: bold;
+}
+QPushButton:hover { background-color: rgba(120, 180, 255, 200); }
+QPushButton:pressed { background-color: rgba(80, 140, 230, 200); }
+"""
+
+
+class _SubTaskRow(QWidget):
+    """하위 할 일 한 줄 위젯."""
+
     def __init__(self, todo: Todo, manager: TodoManager, on_change):
         super().__init__()
         self.todo = todo
         self.manager = manager
         self.on_change = on_change
+        self._build()
+
+    def _build(self):
+        row = QHBoxLayout(self)
+        row.setContentsMargins(28, 1, 6, 1)
+        row.setSpacing(6)
+
+        cb = QCheckBox()
+        cb.setChecked(self.todo.completed)
+        cb.setStyleSheet(_SUB_CB_STYLE)
+        cb.stateChanged.connect(self._toggle)
+
+        text = QLabel(self.todo.text)
+        text.setWordWrap(True)
+        text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        if self.todo.completed:
+            text.setStyleSheet("color: rgba(255,255,255,55); text-decoration: line-through; font-size: 12px;")
+        else:
+            text.setStyleSheet("color: rgba(255,255,255,150); font-size: 12px;")
+
+        del_btn = QPushButton("✕")
+        del_btn.setFixedSize(18, 18)
+        del_btn.setStyleSheet(_DEL_BTN_STYLE)
+        del_btn.clicked.connect(self._delete)
+
+        row.addWidget(cb)
+        row.addWidget(text, 1)
+        row.addWidget(del_btn)
+
+    def _toggle(self):
+        self.manager.toggle_complete(self.todo.id)
+        self.on_change()
+
+    def _delete(self):
+        self.manager.delete(self.todo.id)
+        self.on_change()
+
+
+class _TodoItemWidget(QFrame):
+    def __init__(self, todo: Todo, manager: TodoManager, on_change, sub_tasks: list | None = None):
+        super().__init__()
+        self.todo = todo
+        self.manager = manager
+        self.on_change = on_change
+        self.sub_tasks = sub_tasks or []
         self.setObjectName("item")
         self.setStyleSheet(_ITEM_STYLE)
         self._build()
 
     def _build(self):
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(10, 8, 10, 8)
-        outer.setSpacing(4)
+        outer.setContentsMargins(10, 8, 10, 6)
+        outer.setSpacing(2)
 
-        # Top row
+        # ── 메인 행 ─────────────────────────────────────────────────────────
         row = QHBoxLayout()
         row.setSpacing(8)
 
@@ -177,16 +268,32 @@ class _TodoItemWidget(QFrame):
         else:
             text.setStyleSheet("color: rgba(255,255,255,210); font-size: 13px;")
 
+        row.addWidget(cb)
+        row.addWidget(text, 1)
+
+        # 하위 할 일 개수 뱃지
+        if self.sub_tasks:
+            done_count = sum(1 for s in self.sub_tasks if s.completed)
+            sub_badge = QLabel(f"{done_count}/{len(self.sub_tasks)}")
+            sub_badge.setStyleSheet("color: rgba(100,160,255,160); font-size: 10px; padding: 0 2px;")
+            row.addWidget(sub_badge)
+
+        add_sub_btn = QPushButton("+")
+        add_sub_btn.setFixedSize(22, 22)
+        add_sub_btn.setStyleSheet(_ICON_BTN_STYLE)
+        add_sub_btn.setToolTip("하위 할 일 추가")
+        add_sub_btn.setCheckable(True)
+        add_sub_btn.clicked.connect(self._toggle_sub_input)
+
         del_btn = QPushButton("✕")
         del_btn.setFixedSize(22, 22)
         del_btn.setStyleSheet(_DEL_BTN_STYLE)
         del_btn.clicked.connect(self._delete)
 
-        row.addWidget(cb)
-        row.addWidget(text, 1)
+        row.addWidget(add_sub_btn)
         row.addWidget(del_btn)
 
-        # Timestamp row
+        # ── 타임스탬프 행 ────────────────────────────────────────────────────
         ts_row = QHBoxLayout()
         ts_row.setContentsMargins(24, 0, 0, 0)
         ts_row.setSpacing(0)
@@ -207,6 +314,54 @@ class _TodoItemWidget(QFrame):
 
         outer.addLayout(row)
         outer.addLayout(ts_row)
+
+        # ── 하위 할 일 목록 ───────────────────────────────────────────────────
+        if self.sub_tasks:
+            sep_line = QFrame()
+            sep_line.setFrameShape(QFrame.Shape.HLine)
+            sep_line.setMaximumHeight(1)
+            sep_line.setStyleSheet("background-color: rgba(255,255,255,10); border: none; margin-left: 24px;")
+            outer.addWidget(sep_line)
+
+            for sub in self.sub_tasks:
+                outer.addWidget(_SubTaskRow(sub, self.manager, self.on_change))
+
+        # ── 하위 할 일 입력창 (기본 숨김) ─────────────────────────────────────
+        self._sub_inp_container = QWidget()
+        sub_inp_row = QHBoxLayout(self._sub_inp_container)
+        sub_inp_row.setContentsMargins(28, 4, 6, 2)
+        sub_inp_row.setSpacing(6)
+
+        self._sub_input = QLineEdit()
+        self._sub_input.setPlaceholderText("하위 할 일 추가…")
+        self._sub_input.setStyleSheet(_SUB_INPUT_STYLE)
+        self._sub_input.setFixedHeight(28)
+        self._sub_input.returnPressed.connect(self._add_sub)
+
+        sub_add_btn = QPushButton("+")
+        sub_add_btn.setFixedSize(28, 28)
+        sub_add_btn.setStyleSheet(_SUB_ADD_BTN_STYLE)
+        sub_add_btn.clicked.connect(self._add_sub)
+
+        sub_inp_row.addWidget(self._sub_input, 1)
+        sub_inp_row.addWidget(sub_add_btn)
+        self._sub_inp_container.hide()
+        outer.addWidget(self._sub_inp_container)
+
+    def _toggle_sub_input(self, checked: bool):
+        if checked:
+            self._sub_inp_container.show()
+            self._sub_input.setFocus()
+        else:
+            self._sub_inp_container.hide()
+
+    def _add_sub(self):
+        text = self._sub_input.text().strip()
+        if text:
+            self.manager.add(text, parent_id=self.todo.id)
+            self._sub_input.clear()
+            self._sub_inp_container.hide()
+            self.on_change()
 
     def _toggle(self):
         self.manager.toggle_complete(self.todo.id)
@@ -298,7 +453,7 @@ class OverlayWindow(QWidget):
         close_btn = QPushButton("✕")
         close_btn.setFixedSize(24, 24)
         close_btn.setStyleSheet(_CLOSE_BTN_STYLE)
-        close_btn.clicked.connect(self.hide)
+        close_btn.clicked.connect(self._animated_hide)
 
         hdr.addWidget(title)
         hdr.addStretch()
@@ -382,15 +537,33 @@ class OverlayWindow(QWidget):
 
     def _refresh(self):
         todos = self.manager.get_all()
-        incomplete = [t for t in todos if not t.completed]
-        complete   = [t for t in todos if t.completed]
-        display    = complete if self._log_mode else (incomplete + complete)
+
+        # 최상위 / 하위 분류
+        sub_map: dict[str, list] = {}
+        top_incomplete: list = []
+        top_complete:   list = []
+        for t in todos:
+            if t.parent_id:
+                sub_map.setdefault(t.parent_id, []).append(t)
+            elif t.completed:
+                top_complete.append(t)
+            else:
+                top_incomplete.append(t)
+
+        # 하위 항목 정렬: 미완료 먼저, 생성 시간 순
+        for lst in sub_map.values():
+            lst.sort(key=lambda t: (t.completed, t.created_at or ""))
+
+        display    = top_complete if self._log_mode else (top_incomplete + top_complete)
         empty_text = "완료된 항목이 없습니다" if self._log_mode else "할 일이 없습니다 🎉"
 
         # 내용이 바뀐 경우에만 위젯 재구성 (불필요한 rebuild 방지)
-        fingerprint = tuple((t.id, t.completed, t.text) for t in display)
-        counts_only = fingerprint == self._refresh_fingerprint
-        if not counts_only:
+        fingerprint = tuple(
+            (t.id, t.completed, t.text,
+             tuple((s.id, s.completed, s.text) for s in sub_map.get(t.id, [])))
+            for t in display
+        )
+        if fingerprint != self._refresh_fingerprint:
             self._refresh_fingerprint = fingerprint
             while self._list_layout.count() > 1:
                 item = self._list_layout.takeAt(0)
@@ -405,13 +578,14 @@ class OverlayWindow(QWidget):
                 self._empty_lbl.hide()
                 self._scroll.show()
                 for todo in display:
-                    w = _TodoItemWidget(todo, self.manager, self._on_todo_changed)
+                    subs = sub_map.get(todo.id, [])
+                    w = _TodoItemWidget(todo, self.manager, self._on_todo_changed, subs)
                     self._list_layout.insertWidget(self._list_layout.count() - 1, w)
             self.adjustSize()
 
-        done  = len(complete)
-        total = len(todos)
-        self._count_lbl.setText(f"{done}/{total} 완료" if total else "")
+        done  = len(top_complete)
+        total = len(top_incomplete) + len(top_complete)
+        self._count_lbl.setText(f"{done}/{total}" if total else "")
 
     def _on_todo_changed(self):
         self._refresh()

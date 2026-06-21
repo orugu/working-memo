@@ -172,6 +172,7 @@ class SyncManager(QObject):
                         created_at=_parse_dt(todo.created_at) or datetime.utcnow(),
                         updated_at=_parse_dt(todo.updated_at) or datetime.utcnow(),
                         deleted=todo.deleted,
+                        parent_id=todo.parent_id,
                     )
                     synced_ids.add(todo.id)
             self._tm.mark_synced(synced_ids)
@@ -211,4 +212,5 @@ def _to_dict(t) -> dict:
         "completed_at": iso(t.completed_at),
         "completed": t.completed,
         "deleted": t.deleted,
+        "parent_id": getattr(t, "parent_id", None),
     }

@@ -65,6 +65,7 @@ class TodoCRUD:
         created_at: datetime,
         updated_at: datetime,
         deleted: bool,
+        parent_id: str | None = None,
     ) -> Todo:
         """로컬 레코드를 DB에 삽입하거나 updated_at 기준으로 병합."""
         todo = session.get(Todo, todo_id)
@@ -82,6 +83,7 @@ class TodoCRUD:
             todo.completed_at = completed_at
             todo.updated_at = updated_at
             todo.deleted = deleted
+            todo.parent_id = parent_id
         session.flush()
         return todo
 

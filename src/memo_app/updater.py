@@ -4,6 +4,7 @@ import platform
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.request
 import json
 from pathlib import Path
@@ -87,6 +88,12 @@ class _CheckWorker(QRunnable):
                 self._c.update_available.emit(latest, url)
             else:
                 self._c.up_to_date.emit()
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                # 릴리스가 아직 없는 상태 → 최신으로 간주
+                self._c.up_to_date.emit()
+            else:
+                self._c.check_failed.emit(f"HTTP {e.code}: {e.reason}")
         except Exception as e:
             self._c.check_failed.emit(str(e))
 

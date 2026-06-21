@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -13,7 +14,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from memo_app import __version__
 from .settings_manager import SettingsManager
+from .updater import UpdateChecker
 
 # ── Styles ──────────────────────────────────────────────────────────────────
 
@@ -504,6 +507,140 @@ class _UIPage(QWidget):
 
 # ── Main dialog ───────────────────────────────────────────────────────────────
 
+_PROGRESS_STYLE = """
+QProgressBar {
+    background: rgba(255,255,255,14);
+    border: 1px solid rgba(255,255,255,25);
+    border-radius: 4px;
+    height: 8px;
+    text-align: center;
+    color: transparent;
+}
+QProgressBar::chunk {
+    background: rgba(100,160,255,200);
+    border-radius: 4px;
+}
+"""
+
+
+class _UpdatePage(QWidget):
+    """버전 정보 및 업데이트 탭"""
+
+    def __init__(self, checker: UpdateChecker):
+        super().__init__()
+        self._checker = checker
+        self._download_url: str | None = None
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(12)
+
+        lay.addWidget(_section("버전 정보"))
+        lay.addWidget(_divider())
+
+        ver_row = QHBoxLayout()
+        ver_row.addWidget(_label("현재 버전"))
+        ver_row.addStretch()
+        self._ver_lbl = QLabel(f"v{__version__}")
+        self._ver_lbl.setStyleSheet(_VALUE_LABEL)
+        ver_row.addWidget(self._ver_lbl)
+        lay.addLayout(ver_row)
+
+        lay.addSpacing(4)
+        lay.addWidget(_section("업데이트"))
+        lay.addWidget(_divider())
+
+        self._status_lbl = QLabel("업데이트 확인 전")
+        self._status_lbl.setStyleSheet(_HINT_LABEL)
+        self._status_lbl.setWordWrap(True)
+        lay.addWidget(self._status_lbl)
+
+        self._progress = QProgressBar()
+        self._progress.setStyleSheet(_PROGRESS_STYLE)
+        self._progress.setFixedHeight(8)
+        self._progress.setRange(0, 100)
+        self._progress.hide()
+        lay.addWidget(self._progress)
+
+        btn_row = QHBoxLayout()
+        self._check_btn = QPushButton("업데이트 확인")
+        self._check_btn.setStyleSheet(_SAVE_BTN_STYLE)
+        self._check_btn.setFixedHeight(36)
+        self._check_btn.clicked.connect(self._do_check)
+        btn_row.addWidget(self._check_btn)
+
+        self._install_btn = QPushButton("지금 업데이트")
+        self._install_btn.setStyleSheet(_SAVE_BTN_STYLE)
+        self._install_btn.setFixedHeight(36)
+        self._install_btn.hide()
+        self._install_btn.clicked.connect(self._do_install)
+        btn_row.addWidget(self._install_btn)
+        lay.addLayout(btn_row)
+
+        lay.addStretch()
+
+        checker.update_available.connect(self._on_update_available)
+        checker.up_to_date.connect(self._on_up_to_date)
+        checker.check_failed.connect(self._on_check_failed)
+        checker.download_progress.connect(self._on_progress)
+        checker.download_done.connect(self._on_download_done)
+        checker.download_failed.connect(self._on_download_failed)
+
+    def _do_check(self):
+        self._check_btn.setEnabled(False)
+        self._install_btn.hide()
+        self._status_lbl.setStyleSheet(_HINT_LABEL)
+        self._status_lbl.setText("확인 중...")
+        self._checker.check_async()
+
+    def _on_update_available(self, version: str, url: str):
+        self._download_url = url
+        self._status_lbl.setStyleSheet("color: rgba(100,210,120,200); font-size: 12px;")
+        self._status_lbl.setText(f"새 버전 v{version}이 출시됐습니다!")
+        self._install_btn.setText(f"v{version}으로 업데이트")
+        self._install_btn.show()
+        self._check_btn.setEnabled(True)
+
+    def _on_up_to_date(self):
+        self._status_lbl.setStyleSheet(_SUCCESS_LABEL)
+        self._status_lbl.setText("최신 버전입니다 ✓")
+        self._check_btn.setEnabled(True)
+
+    def _on_check_failed(self, err: str):
+        self._status_lbl.setStyleSheet("color: rgba(220,80,80,220); font-size: 12px;")
+        self._status_lbl.setText(f"확인 실패: {err[:80]}")
+        self._check_btn.setEnabled(True)
+
+    def _do_install(self):
+        if not self._download_url:
+            return
+        self._install_btn.setEnabled(False)
+        self._check_btn.setEnabled(False)
+        self._progress.setValue(0)
+        self._progress.show()
+        self._status_lbl.setText("다운로드 중...")
+        self._checker.download_async(self._download_url)
+
+    def _on_progress(self, downloaded: int, total: int):
+        if total > 0:
+            self._progress.setRange(0, 100)
+            self._progress.setValue(int(downloaded / total * 100))
+        else:
+            self._progress.setRange(0, 0)
+
+    def _on_download_done(self, path: str):
+        self._progress.hide()
+        self._status_lbl.setText("업데이트 적용 중... 잠시 후 재시작됩니다.")
+        QTimer.singleShot(800, lambda: self._checker.apply_update(path))
+
+    def _on_download_failed(self, err: str):
+        self._progress.hide()
+        self._install_btn.setEnabled(True)
+        self._check_btn.setEnabled(True)
+        self._status_lbl.setStyleSheet("color: rgba(220,80,80,220); font-size: 12px;")
+        self._status_lbl.setText(f"다운로드 실패: {err[:80]}")
+
+
 class SettingsDialog(QWidget):
     corner_size_changed = Signal(int)
 
@@ -512,11 +649,13 @@ class SettingsDialog(QWidget):
         ("🎯", "범위설정"),
         ("📋", "기록 관리"),
         ("🎨", "UI 설정"),
+        ("🔄", "업데이트"),
     ]
 
-    def __init__(self, settings: SettingsManager, parent=None):
+    def __init__(self, settings: SettingsManager, checker: UpdateChecker, parent=None):
         super().__init__(parent)
         self.settings = settings
+        self._checker = checker
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -588,6 +727,7 @@ class SettingsDialog(QWidget):
         self._page_range = _RangePage(settings=self.settings)
         self._page_history = _HistoryPage(settings=self.settings)
         self._page_ui = _UIPage(settings=self.settings)
+        self._page_update = _UpdatePage(checker=self._checker)
 
         self._page_range.corner_size_changed.connect(self.corner_size_changed)
 
@@ -595,6 +735,7 @@ class SettingsDialog(QWidget):
         self._stack.addWidget(self._page_range)
         self._stack.addWidget(self._page_history)
         self._stack.addWidget(self._page_ui)
+        self._stack.addWidget(self._page_update)
 
         body.addWidget(self._stack, 1)
         outer.addLayout(body)

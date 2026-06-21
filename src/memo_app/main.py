@@ -11,6 +11,7 @@ from .overlay import OverlayWindow
 from .settings_manager import SettingsManager
 from .sync_manager import SyncManager
 from .todo_manager import TodoManager
+from .updater import UpdateChecker
 
 _INSTANCE_KEY = "WorkingMemo-SingleInstance"
 
@@ -54,22 +55,21 @@ def main():
         print("[WorkingMemo] 이미 실행 중입니다.")
         sys.exit(0)
 
-    # 이 프로세스가 서버 역할
     server = QLocalServer(app)
-    QLocalServer.removeServer(_INSTANCE_KEY)   # 이전에 죽은 소켓 정리
+    QLocalServer.removeServer(_INSTANCE_KEY)
     server.listen(_INSTANCE_KEY)
 
     settings = SettingsManager()
     manager  = TodoManager()
     db       = DatabaseManager()
-    overlay  = OverlayWindow(manager, settings)
+    checker  = UpdateChecker()
+    overlay  = OverlayWindow(manager, settings, checker)
 
     def _on_new_connection():
         conn = server.nextPendingConnection()
         if conn:
             conn.waitForReadyRead(200)
             conn.disconnectFromServer()
-        # 다른 인스턴스가 show 요청 → 오버레이 표시
         if not overlay.isVisible():
             overlay.toggle()
 
@@ -98,8 +98,15 @@ def main():
         QMenu::separator { height: 1px; background: rgba(255,255,255,20); margin: 4px 8px; }
     """)
 
-    toggle_act = menu.addAction("📝   열기 / 닫기")
+    toggle_act  = menu.addAction("📝   열기 / 닫기")
     toggle_act.triggered.connect(overlay.toggle)
+    menu.addSeparator()
+
+    # 업데이트 메뉴 아이템 (평소엔 숨김, 업데이트 발견 시 표시)
+    _update_act = menu.addAction("🔄   업데이트 확인 중...")
+    _update_act.setEnabled(False)
+    _update_act.setVisible(False)
+
     menu.addSeparator()
     quit_act = menu.addAction("✕   종료")
     quit_act.triggered.connect(app.quit)
@@ -111,6 +118,27 @@ def main():
         else None
     )
     tray.show()
+
+    # ── 업데이트 체크 연동 ────────────────────────────────────────────────────
+    def _on_update_available(version: str, url: str):
+        _update_act.setText(f"🔄   v{version}으로 업데이트 가능")
+        _update_act.setEnabled(True)
+        _update_act.setVisible(True)
+        _update_act.triggered.connect(
+            lambda: _open_update_tab()
+        )
+        tray.showMessage(
+            "Working Memo 업데이트",
+            f"새 버전 v{version}이 출시됐습니다. 설정 → 업데이트 탭에서 설치하세요.",
+            QSystemTrayIcon.MessageIcon.Information,
+            5000,
+        )
+
+    def _open_update_tab():
+        overlay._settings_dialog._switch(4)  # 업데이트 탭 인덱스
+        overlay._settings_dialog.show_centered()
+
+    checker.update_available.connect(_on_update_available)
 
     # ── Corner + Ctrl monitor ─────────────────────────────────────────────────
     monitor = CornerMonitor(corner_size=settings.corner_size)
@@ -130,8 +158,9 @@ def main():
 
     # ── 초기 표시 ────────────────────────────────────────────────────────────
     overlay.toggle()
-    # sync는 약간 늦게 시작해 UI 렌더링 먼저 완료
     QTimer.singleShot(500, sync.start)
+    # 시작 10초 후 업데이트 자동 체크
+    QTimer.singleShot(10_000, checker.check_async)
 
     sys.exit(app.exec())
 

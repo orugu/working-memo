@@ -227,7 +227,7 @@ _SYNC_COLORS = {
 
 
 class OverlayWindow(QWidget):
-    def __init__(self, manager: TodoManager, settings: SettingsManager):
+    def __init__(self, manager: TodoManager, settings: SettingsManager, checker):
         super().__init__()
         self.manager = manager
         self.settings = settings
@@ -238,7 +238,7 @@ class OverlayWindow(QWidget):
         self._leave_timer.timeout.connect(self.hide)
         self._setup_window()
         self._build_ui()
-        self._settings_dialog = SettingsDialog(self.settings)
+        self._settings_dialog = SettingsDialog(self.settings, checker)
         self._settings_dialog.set_todo_manager(self.manager)
         self._settings_dialog.set_overlay_callbacks(
             on_width=self._apply_width,

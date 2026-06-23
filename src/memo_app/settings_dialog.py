@@ -1,6 +1,7 @@
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QFrame,
     QHBoxLayout,
@@ -333,42 +334,144 @@ class _AccessPage(QWidget):
         self._conn_msg.setText(msg)
 
 
+class _DisplayCard(QFrame):
+    """디스플레이 하나의 코너 설정 카드."""
+    changed = Signal()
+
+    def __init__(self, idx: int, screen, config: dict):
+        super().__init__()
+        self._config = config
+        self.setStyleSheet("""
+QFrame {
+    background: rgba(255,255,255,6);
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,12);
+}
+""")
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(8)
+
+        geo = screen.geometry()
+        is_primary = screen == QApplication.primaryScreen()
+        suffix = "  [기본 디스플레이]" if is_primary else ""
+        name_lbl = QLabel(f"디스플레이 {idx + 1}  —  {geo.width()} × {geo.height()} px{suffix}")
+        name_lbl.setStyleSheet("color: rgba(255,255,255,210); font-size: 12px; font-weight: bold;")
+
+        self._cb = QCheckBox("이 디스플레이에서 코너 감지 활성화")
+        self._cb.setChecked(config.get("enabled", True))
+        self._cb.setStyleSheet("""
+QCheckBox { color: rgba(255,255,255,160); font-size: 12px; }
+QCheckBox::indicator { width:14px; height:14px; border-radius:3px;
+    border:1.5px solid rgba(255,255,255,100); background:transparent; }
+QCheckBox::indicator:checked { background:#4caf50; border-color:#4caf50; }
+""")
+        self._cb.stateChanged.connect(self._on_cb)
+
+        slider_row = QHBoxLayout()
+        slider_row.addWidget(_label("코너 범위"))
+        slider_row.addStretch()
+        self._val_lbl = QLabel(f"{config.get('corner_size', 20)} px")
+        self._val_lbl.setStyleSheet(_VALUE_LABEL)
+        slider_row.addWidget(self._val_lbl)
+
+        self._slider = QSlider(Qt.Orientation.Horizontal)
+        self._slider.setRange(5, 100)
+        self._slider.setValue(config.get("corner_size", 20))
+        self._slider.setStyleSheet(_SLIDER_STYLE)
+        self._slider.setEnabled(config.get("enabled", True))
+        self._slider.valueChanged.connect(self._on_slider)
+
+        lay.addWidget(name_lbl)
+        lay.addWidget(self._cb)
+        lay.addLayout(slider_row)
+        lay.addWidget(self._slider)
+
+    def _on_cb(self):
+        self._config["enabled"] = self._cb.isChecked()
+        self._slider.setEnabled(self._cb.isChecked())
+        self.changed.emit()
+
+    def _on_slider(self, v: int):
+        self._val_lbl.setText(f"{v} px")
+        self._config["corner_size"] = v
+        self.changed.emit()
+
+    def get_config(self) -> dict:
+        return dict(self._config)
+
+
 class _RangePage(QWidget):
-    """범위설정 탭"""
-    corner_size_changed = Signal(int)
+    """범위설정 탭 — 디스플레이별 코너 인식 범위"""
+    displays_changed = Signal()
 
     def __init__(self, settings: SettingsManager):
         super().__init__()
         self.settings = settings
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(12)
+        self._cards: list[_DisplayCard] = []
 
-        lay.addWidget(_section("마우스 인식 범위"))
-        lay.addWidget(_divider())
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        row = QHBoxLayout()
-        row.addWidget(_label("코너 감지 범위"))
-        row.addStretch()
-        self._val = QLabel(f"{settings.corner_size} px")
-        self._val.setStyleSheet(_VALUE_LABEL)
-        row.addWidget(self._val)
-        lay.addLayout(row)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("""
+QScrollArea { background: transparent; border: none; }
+QScrollBar:vertical { background: rgba(255,255,255,8); width:5px; border-radius:2px; }
+QScrollBar::handle:vertical { background: rgba(255,255,255,50); border-radius:2px; min-height:16px; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }
+""")
 
-        self._slider = QSlider(Qt.Orientation.Horizontal)
-        self._slider.setRange(5, 100)
-        self._slider.setValue(settings.corner_size)
-        self._slider.setStyleSheet(_SLIDER_STYLE)
-        self._slider.valueChanged.connect(self._on_change)
-        lay.addWidget(self._slider)
+        inner = QWidget()
+        inner.setStyleSheet("background: transparent;")
+        self._lay = QVBoxLayout(inner)
+        self._lay.setContentsMargins(0, 0, 4, 0)
+        self._lay.setSpacing(10)
 
-        lay.addWidget(_hint("화면 좌측 상단 코너에서 감지할 픽셀 범위입니다. 값이 클수록 더 넓은 영역에서 트리거됩니다. (5 – 100 px)"))
-        lay.addStretch()
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
 
-    def _on_change(self, v: int):
-        self._val.setText(f"{v} px")
-        self.settings.corner_size = v
-        self.corner_size_changed.emit(v)
+        self._build_cards()
+
+    def _build_cards(self):
+        while self._lay.count():
+            item = self._lay.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._cards.clear()
+
+        self._lay.addWidget(_section("디스플레이별 코너 인식 범위"))
+        self._lay.addWidget(_divider())
+        self._lay.addWidget(_hint(
+            "각 디스플레이의 좌측 상단 코너에서 마우스 + Ctrl로 오버레이를 열 수 있습니다. "
+            "범위가 클수록 더 넓은 영역에서 감지됩니다. (5 – 100 px)"
+        ))
+
+        screens = QApplication.screens()
+        configs = list(self.settings.display_configs)
+        while len(configs) < len(screens):
+            configs.append({"corner_size": self.settings.corner_size, "enabled": True})
+
+        for idx, screen in enumerate(screens):
+            card = _DisplayCard(idx, screen, configs[idx])
+            card.changed.connect(self._on_changed)
+            self._lay.addWidget(card)
+            self._cards.append(card)
+
+        self._lay.addStretch()
+
+    def _on_changed(self):
+        new_configs = [c.get_config() for c in self._cards]
+        self.settings.display_configs = new_configs
+        self.displays_changed.emit()
+
+    def refresh_screens(self):
+        """디스플레이 구성이 바뀌었을 때 카드를 다시 구성한다."""
+        self._build_cards()
 
 
 class _HistoryPage(QWidget):
@@ -438,6 +541,213 @@ class _HistoryPage(QWidget):
         self._msg.setText(text)
         from PySide6.QtCore import QTimer
         QTimer.singleShot(2500, lambda: self._msg.setText(""))
+
+
+_FILTER_BTN = """
+QPushButton {
+    background: rgba(255,255,255,12);
+    color: rgba(255,255,255,140);
+    border: none;
+    border-radius: 6px;
+    font-size: 11px;
+    padding: 4px 10px;
+}
+QPushButton:hover { background: rgba(255,255,255,22); color: white; }
+QPushButton:checked {
+    background: rgba(100,160,255,200);
+    color: white;
+}
+"""
+
+_STATUS_STYLES = {
+    "active":    ("●", "color: rgba(100,160,255,220);"),
+    "completed": ("●", "color: rgba(100,210,120,220);"),
+    "deleted":   ("●", "color: rgba(180,80,80,200);"),
+}
+
+
+def _log_item_widget(todo) -> QWidget:
+    from datetime import datetime
+
+    def _fmt(iso):
+        if not iso:
+            return ""
+        try:
+            return datetime.fromisoformat(iso).strftime("%y/%m/%d %H:%M")
+        except Exception:
+            return iso
+
+    if todo.deleted:
+        status_key = "deleted"
+        status_text = "삭제됨"
+    elif todo.completed:
+        status_key = "completed"
+        status_text = "완료"
+    else:
+        status_key = "active"
+        status_text = "활성"
+
+    dot_char, dot_style = _STATUS_STYLES[status_key]
+
+    frame = QFrame()
+    frame.setStyleSheet("""
+QFrame {
+    background: rgba(255,255,255,6);
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,10);
+}
+""")
+    row = QHBoxLayout(frame)
+    row.setContentsMargins(10, 7, 10, 7)
+    row.setSpacing(8)
+
+    dot = QLabel(dot_char)
+    dot.setStyleSheet(dot_style + " font-size: 9px;")
+    dot.setFixedWidth(10)
+
+    info_col = QVBoxLayout()
+    info_col.setSpacing(2)
+
+    text_style = "color: rgba(255,255,255,75); font-size: 12px; text-decoration: line-through;" if todo.deleted else (
+        "color: rgba(255,255,255,80); font-size: 12px; text-decoration: line-through;" if todo.completed else
+        "color: rgba(255,255,255,200); font-size: 12px;"
+    )
+
+    indent = "  └ " if todo.parent_id else ""
+    text_lbl = QLabel(f"{indent}{todo.text}")
+    text_lbl.setStyleSheet(text_style)
+    text_lbl.setWordWrap(True)
+
+    meta_parts = [f"추가 {_fmt(todo.created_at)}"]
+    if todo.completed and todo.completed_at:
+        meta_parts.append(f"완료 {_fmt(todo.completed_at)}")
+    if todo.deleted:
+        meta_parts.append(f"삭제 {_fmt(todo.updated_at)}")
+
+    meta_lbl = QLabel("  •  ".join(meta_parts))
+    meta_lbl.setStyleSheet("color: rgba(255,255,255,50); font-size: 10px;")
+
+    status_lbl = QLabel(status_text)
+    status_lbl.setStyleSheet(dot_style + " font-size: 10px; font-weight: bold;")
+    status_lbl.setAlignment(Qt.AlignmentFlag.AlignTop)
+    status_lbl.setFixedWidth(36)
+
+    info_col.addWidget(text_lbl)
+    info_col.addWidget(meta_lbl)
+
+    row.addWidget(dot)
+    row.addLayout(info_col, 1)
+    row.addWidget(status_lbl)
+
+    return frame
+
+
+class _LogPage(QWidget):
+    """전체 기록 탭 — 삭제된 항목 포함 전체 히스토리"""
+
+    def __init__(self):
+        super().__init__()
+        self._todo_manager = None
+        self._filter = "all"  # all | active | completed | deleted
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(10)
+
+        lay.addWidget(_section("전체 기록"))
+        lay.addWidget(_divider())
+
+        # ── 필터 버튼 ────────────────────────────────────────────────────────
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(4)
+
+        self._filter_btns: dict[str, QPushButton] = {}
+        for key, label in [("all", "전체"), ("active", "활성"), ("completed", "완료"), ("deleted", "삭제됨")]:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setStyleSheet(_FILTER_BTN)
+            btn.clicked.connect(lambda _, k=key: self._set_filter(k))
+            filter_row.addWidget(btn)
+            self._filter_btns[key] = btn
+
+        self._filter_btns["all"].setChecked(True)
+        filter_row.addStretch()
+
+        refresh_btn = QPushButton("↺")
+        refresh_btn.setFixedSize(26, 26)
+        refresh_btn.setStyleSheet(_FILTER_BTN)
+        refresh_btn.setToolTip("새로고침")
+        refresh_btn.clicked.connect(self.refresh)
+        filter_row.addWidget(refresh_btn)
+
+        lay.addLayout(filter_row)
+
+        # ── 스크롤 영역 ──────────────────────────────────────────────────────
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setStyleSheet("""
+QScrollArea { background: transparent; border: none; }
+QScrollBar:vertical { background: rgba(255,255,255,8); width:5px; border-radius:2px; }
+QScrollBar::handle:vertical { background: rgba(255,255,255,50); border-radius:2px; min-height:16px; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }
+""")
+
+        self._inner = QWidget()
+        self._inner.setStyleSheet("background: transparent;")
+        self._inner_lay = QVBoxLayout(self._inner)
+        self._inner_lay.setContentsMargins(0, 0, 4, 0)
+        self._inner_lay.setSpacing(4)
+        self._inner_lay.addStretch()
+        self._scroll.setWidget(self._inner)
+
+        self._empty_lbl = QLabel("기록이 없습니다.")
+        self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_lbl.setStyleSheet("color: rgba(255,255,255,50); font-size: 13px; padding: 24px 0;")
+        self._empty_lbl.hide()
+
+        lay.addWidget(self._empty_lbl)
+        lay.addWidget(self._scroll, 1)
+
+    def set_todo_manager(self, manager):
+        self._todo_manager = manager
+
+    def _set_filter(self, key: str):
+        self._filter = key
+        for k, btn in self._filter_btns.items():
+            btn.setChecked(k == key)
+        self.refresh()
+
+    def refresh(self):
+        if not self._todo_manager:
+            return
+
+        all_todos = self._todo_manager.get_history()
+
+        if self._filter == "active":
+            todos = [t for t in all_todos if not t.deleted and not t.completed]
+        elif self._filter == "completed":
+            todos = [t for t in all_todos if not t.deleted and t.completed]
+        elif self._filter == "deleted":
+            todos = [t for t in all_todos if t.deleted]
+        else:
+            todos = all_todos
+
+        while self._inner_lay.count() > 1:
+            item = self._inner_lay.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not todos:
+            self._empty_lbl.show()
+            self._scroll.hide()
+        else:
+            self._empty_lbl.hide()
+            self._scroll.show()
+            for todo in todos:
+                w = _log_item_widget(todo)
+                self._inner_lay.insertWidget(self._inner_lay.count() - 1, w)
 
 
 class _UIPage(QWidget):
@@ -687,12 +997,13 @@ class _UpdatePage(QWidget):
 
 
 class SettingsDialog(QWidget):
-    corner_size_changed = Signal(int)
+    displays_changed = Signal()
 
     _TABS = [
         ("🔐", "접속정보"),
         ("🎯", "범위설정"),
         ("📋", "기록 관리"),
+        ("📜", "전체 로그"),
         ("🎨", "UI 설정"),
         ("🔄", "업데이트"),
     ]
@@ -771,16 +1082,20 @@ class SettingsDialog(QWidget):
         self._page_access = _AccessPage(settings=self.settings)
         self._page_range = _RangePage(settings=self.settings)
         self._page_history = _HistoryPage(settings=self.settings)
+        self._page_log = _LogPage()
         self._page_ui = _UIPage(settings=self.settings)
         self._page_update = _UpdatePage(checker=self._checker)
 
-        self._page_range.corner_size_changed.connect(self.corner_size_changed)
+        self._page_range.displays_changed.connect(self.displays_changed)
 
         self._stack.addWidget(self._page_access)
         self._stack.addWidget(self._page_range)
         self._stack.addWidget(self._page_history)
+        self._stack.addWidget(self._page_log)
         self._stack.addWidget(self._page_ui)
         self._stack.addWidget(self._page_update)
+
+        self._stack.currentChanged.connect(self._on_tab_changed)
 
         body.addWidget(self._stack, 1)
         outer.addLayout(body)
@@ -792,8 +1107,14 @@ class SettingsDialog(QWidget):
         for i, btn in enumerate(self._tab_btns):
             btn.setStyleSheet(_TAB_ACTIVE if i == idx else _TAB_DEFAULT)
 
+    def _on_tab_changed(self, idx: int):
+        # 전체 로그 탭(index 3)으로 전환하면 즉시 새로고침
+        if idx == 3:
+            self._page_log.refresh()
+
     def set_todo_manager(self, manager):
         self._page_history.set_todo_manager(manager)
+        self._page_log.set_todo_manager(manager)
 
     def set_sync_manager(self, sync_manager):
         self._page_history.set_sync_manager(sync_manager)

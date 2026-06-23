@@ -15,11 +15,13 @@ _DEFAULTS = {
     "app_username": "",
     "app_password": "",
     # ── UI ───────────────────────────────────────────────────────────────
-    "corner_size":    20,
-    "overlay_width":  380,
-    "leave_delay":    400,
-    "animation":      True,
-    "anim_duration":  220,
+    "corner_size":      20,
+    "overlay_width":    380,
+    "leave_delay":      400,
+    "animation":        True,
+    "anim_duration":    220,
+    # ── 디스플레이별 코너 설정 [{corner_size, enabled}, ...] ─────────────
+    "display_configs":  [],
 }
 
 
@@ -127,6 +129,15 @@ class SettingsManager:
     @corner_size.setter
     def corner_size(self, v: int):
         self._data["corner_size"] = max(5, min(100, v)); self._save()
+
+    @property
+    def display_configs(self) -> list[dict]:
+        return self._data.get("display_configs", [])
+
+    @display_configs.setter
+    def display_configs(self, v: list[dict]):
+        self._data["display_configs"] = v
+        self._save()
 
     @property
     def animation(self) -> bool:

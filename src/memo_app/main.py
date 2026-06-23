@@ -6,7 +6,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from .db import DatabaseManager
-from .monitor import CornerMonitor
+from .monitor import CornerMonitor, DisplayCorner, get_physical_monitor_rects
 from .overlay import OverlayWindow
 from .settings_manager import SettingsManager
 from .sync_manager import SyncManager
@@ -135,18 +135,34 @@ def main():
         )
 
     def _open_update_tab():
-        overlay._settings_dialog._switch(4)  # 업데이트 탭 인덱스
+        overlay._settings_dialog._switch(5)  # 업데이트 탭 인덱스 (로그 탭 추가로 +1)
         overlay._settings_dialog.show_centered()
 
     checker.update_available.connect(_on_update_available)
 
     # ── Corner + Ctrl monitor ─────────────────────────────────────────────────
-    monitor = CornerMonitor(corner_size=settings.corner_size)
+    def _build_corners() -> list[DisplayCorner]:
+        phys_rects = get_physical_monitor_rects()
+        configs = list(settings.display_configs)
+        while len(configs) < len(phys_rects):
+            configs.append({"corner_size": settings.corner_size, "enabled": True})
+        return [
+            DisplayCorner(
+                origin_x=left,
+                origin_y=top,
+                corner_size=cfg.get("corner_size", settings.corner_size),
+                enabled=cfg.get("enabled", True),
+                name=f"디스플레이 {i + 1}",
+            )
+            for i, ((left, top, _r, _b), cfg) in enumerate(zip(phys_rects, configs))
+        ]
+
+    monitor = CornerMonitor(corners=_build_corners())
     monitor.corner_triggered.connect(overlay.toggle)
     monitor.start()
 
-    overlay._settings_dialog.corner_size_changed.connect(
-        lambda v: setattr(monitor, "corner_size", v)
+    overlay._settings_dialog.displays_changed.connect(
+        lambda: setattr(monitor, "corners", _build_corners())
     )
 
     def _cleanup():

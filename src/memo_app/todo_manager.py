@@ -75,8 +75,6 @@ class TodoManager:
                 self._todos = []
 
     def _save(self):
-        # deleted+synced 항목은 이미 DB에 반영됐으므로 로컬에서 제거
-        self._todos = [t for t in self._todos if not (t.deleted and t.synced)]
         self.path.write_text(
             json.dumps([t.to_dict() for t in self._todos], ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -147,6 +145,11 @@ class TodoManager:
     def get_pending(self) -> list[Todo]:
         with self._lock:
             return [t for t in self._todos if not t.synced]
+
+    def get_history(self) -> list[Todo]:
+        """삭제된 항목을 포함한 전체 기록을 updated_at 내림차순으로 반환한다."""
+        with self._lock:
+            return sorted(self._todos, key=lambda t: t.updated_at or "", reverse=True)
 
     # ── 동기화 지원 ───────────────────────────────────────────────────────
 

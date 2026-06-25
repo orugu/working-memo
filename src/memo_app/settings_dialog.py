@@ -1,4 +1,4 @@
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, QPoint, QRunnable, QThreadPool, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -750,13 +750,87 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }
                 self._inner_lay.insertWidget(self._inner_lay.count() - 1, w)
 
 
+_PILL_ON = """
+QPushButton {
+    background: rgba(100,160,255,200); color: white;
+    border: none; border-radius: 6px; font-size: 12px; padding: 5px 10px;
+}"""
+_PILL_OFF = """
+QPushButton {
+    background: rgba(255,255,255,12); color: rgba(255,255,255,140);
+    border: 1px solid rgba(255,255,255,25); border-radius: 6px;
+    font-size: 12px; padding: 5px 10px;
+}
+QPushButton:hover { background: rgba(255,255,255,22); color: rgba(255,255,255,200); }"""
+
+
 class _UIPage(QWidget):
     """UI 설정 탭"""
+
+    trigger_changed = Signal(str, str)  # (trigger_mode, quick_key)
+
     def __init__(self, settings: SettingsManager):
         super().__init__()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(12)
+
+        self._settings = settings
+
+        # ── 트리거 설정 ───────────────────────────────────────────────────
+        lay.addWidget(_section("트리거 설정"))
+        lay.addWidget(_divider())
+
+        # 트리거 모드 선택
+        lay.addWidget(_label("트리거 방식"))
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(6)
+        self._mode_grp = QButtonGroup(self)
+        self._mode_grp.setExclusive(True)
+        for label, val in [("📐  코너 + 키", "corner_key"), ("⌨️  키만 누르기", "key_only")]:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setChecked(settings.trigger_mode == val)
+            btn.setProperty("val", val)
+            btn.setStyleSheet(_PILL_ON if settings.trigger_mode == val else _PILL_OFF)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._mode_grp.addButton(btn)
+            mode_row.addWidget(btn)
+        mode_row.addStretch()
+        lay.addLayout(mode_row)
+        lay.addWidget(_hint("코너 + 키: 마우스를 코너에 놓고 키 입력 시 열기/닫기\n키만 누르기: 마우스 위치 관계없이 키 입력만으로 열기/닫기"))
+
+        lay.addSpacing(6)
+
+        # 트리거 키 선택
+        lay.addWidget(_label("트리거 키"))
+        key_rows = [
+            [("Ctrl", "ctrl"), ("Alt", "alt"), ("Shift", "shift"), ("Cmd ⌘", "cmd")],
+            [("F1","f1"),("F2","f2"),("F3","f3"),("F4","f4"),("F5","f5"),("F6","f6")],
+            [("F7","f7"),("F8","f8"),("F9","f9"),("F10","f10"),("F11","f11"),("F12","f12")],
+        ]
+        self._key_grp = QButtonGroup(self)
+        self._key_grp.setExclusive(True)
+        for row_items in key_rows:
+            row = QHBoxLayout()
+            row.setSpacing(4)
+            for label, val in row_items:
+                btn = QPushButton(label)
+                btn.setCheckable(True)
+                btn.setChecked(settings.quick_key == val)
+                btn.setProperty("val", val)
+                btn.setStyleSheet(_PILL_ON if settings.quick_key == val else _PILL_OFF)
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.setFixedHeight(28)
+                self._key_grp.addButton(btn)
+                row.addWidget(btn)
+            row.addStretch()
+            lay.addLayout(row)
+
+        self._mode_grp.buttonClicked.connect(self._on_trigger_change)
+        self._key_grp.buttonClicked.connect(self._on_trigger_change)
+
+        lay.addSpacing(8)
 
         lay.addWidget(_section("UI 설정"))
         lay.addWidget(_divider())
@@ -833,9 +907,25 @@ QCheckBox::indicator:checked { background:#4caf50; border-color:#4caf50; }
 
         lay.addStretch()
 
-        self._settings = settings
         self.overlay_width_changed = None
         self.leave_delay_changed = None
+
+    def _on_trigger_change(self, _btn=None):
+        mode = next(
+            (b.property("val") for b in self._mode_grp.buttons() if b.isChecked()),
+            self._settings.trigger_mode,
+        )
+        key = next(
+            (b.property("val") for b in self._key_grp.buttons() if b.isChecked()),
+            self._settings.quick_key,
+        )
+        for b in self._mode_grp.buttons():
+            b.setStyleSheet(_PILL_ON if b.isChecked() else _PILL_OFF)
+        for b in self._key_grp.buttons():
+            b.setStyleSheet(_PILL_ON if b.isChecked() else _PILL_OFF)
+        self._settings.trigger_mode = mode
+        self._settings.quick_key    = key
+        self.trigger_changed.emit(mode, key)
 
     def _on_width(self, v: int):
         self._width_val.setText(f"{v} px")
@@ -998,6 +1088,7 @@ class _UpdatePage(QWidget):
 
 class SettingsDialog(QWidget):
     displays_changed = Signal()
+    trigger_changed  = Signal(str, str)  # (trigger_mode, quick_key)
 
     _TABS = [
         ("🔐", "접속정보"),
@@ -1020,6 +1111,8 @@ class SettingsDialog(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedWidth(520)
         self._tab_btns: list[QPushButton] = []
+        self._first_show = True
+        self._drag_pos: QPoint | None = None
         self._build_ui()
 
     def _build_ui(self):
@@ -1035,18 +1128,22 @@ class SettingsDialog(QWidget):
         outer.setContentsMargins(20, 18, 20, 20)
         outer.setSpacing(16)
 
-        # Header
-        hdr = QHBoxLayout()
+        # Header (드래그 영역)
+        self._hdr_widget = QWidget()
+        self._hdr_widget.setCursor(Qt.CursorShape.SizeAllCursor)
+        hdr = QHBoxLayout(self._hdr_widget)
+        hdr.setContentsMargins(0, 0, 0, 0)
         title = QLabel("⚙  설정")
         title.setStyleSheet("color: white; font-size: 15px; font-weight: bold;")
         close_btn = QPushButton("✕")
         close_btn.setFixedSize(24, 24)
         close_btn.setStyleSheet(_CLOSE_BTN_STYLE)
+        close_btn.setCursor(Qt.CursorShape.ArrowCursor)
         close_btn.clicked.connect(self.hide)
         hdr.addWidget(title)
         hdr.addStretch()
         hdr.addWidget(close_btn)
-        outer.addLayout(hdr)
+        outer.addWidget(self._hdr_widget)
 
         outer.addWidget(_divider())
 
@@ -1087,6 +1184,7 @@ class SettingsDialog(QWidget):
         self._page_update = _UpdatePage(checker=self._checker)
 
         self._page_range.displays_changed.connect(self.displays_changed)
+        self._page_ui.trigger_changed.connect(self.trigger_changed)
 
         self._stack.addWidget(self._page_access)
         self._stack.addWidget(self._page_range)
@@ -1123,12 +1221,30 @@ class SettingsDialog(QWidget):
         self._page_ui.overlay_width_changed = on_width
         self._page_ui.leave_delay_changed = on_delay
 
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            hdr_rect = self._hdr_widget.rect().translated(self._hdr_widget.pos())
+            if hdr_rect.contains(event.position().toPoint()):
+                self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_pos is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None
+        super().mouseReleaseEvent(event)
+
     def show_centered(self):
         self.adjustSize()
-        screen = QApplication.primaryScreen().geometry()
-        x = (screen.width() - self.width()) // 2
-        y = (screen.height() - self.height()) // 2
-        self.move(x, y)
+        if self._first_show:
+            self._first_show = False
+            screen = QApplication.primaryScreen().geometry()
+            x = (screen.width() - self.width()) // 2
+            y = (screen.height() - self.height()) // 2
+            self.move(x, y)
         self.show()
         self.raise_()
         self.activateWindow()

@@ -1,7 +1,8 @@
+import platform
 from datetime import datetime
 
-from PySide6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, Qt, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, Qt, QTimer, Signal
+from PySide6.QtGui import QCursor, QFont
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -91,6 +92,28 @@ QPushButton {
 }
 QPushButton:hover { background: rgba(255,255,255,35); color: white; }
 QPushButton:checked { background: rgba(100,160,255,180); color: white; }
+"""
+
+_PIN_BTN_STYLE_OFF = """
+QPushButton {
+    background: rgba(255,255,255,14);
+    color: rgba(255,255,255,80);
+    border: none;
+    border-radius: 12px;
+    font-size: 13px;
+}
+QPushButton:hover { background: rgba(255,255,255,35); color: rgba(255,255,255,200); }
+"""
+
+_PIN_BTN_STYLE_ON = """
+QPushButton {
+    background: rgba(100,160,255,200);
+    color: white;
+    border: none;
+    border-radius: 12px;
+    font-size: 13px;
+}
+QPushButton:hover { background: rgba(120,180,255,220); }
 """
 
 _SCROLL_STYLE = """
@@ -188,15 +211,59 @@ QPushButton:hover { background-color: rgba(120, 180, 255, 200); }
 QPushButton:pressed { background-color: rgba(80, 140, 230, 200); }
 """
 
+_INLINE_EDIT_STYLE = """
+QLineEdit {
+    background-color: rgba(255, 255, 255, 18);
+    border: 1px solid rgba(100, 160, 255, 160);
+    border-radius: 4px;
+    color: rgba(255, 255, 255, 220);
+    padding: 2px 6px;
+    font-size: 13px;
+}
+"""
+
+_SUB_INLINE_EDIT_STYLE = """
+QLineEdit {
+    background-color: rgba(255, 255, 255, 14);
+    border: 1px solid rgba(100, 160, 255, 140);
+    border-radius: 3px;
+    color: rgba(255, 255, 255, 200);
+    padding: 1px 5px;
+    font-size: 12px;
+}
+"""
+
+_HANDLE_STYLE = """
+QLabel {
+    color: rgba(255,255,255,35);
+    font-size: 12px;
+}
+QLabel:hover {
+    color: rgba(255,255,255,100);
+}
+"""
+
+
+class _ClickableLabel(QLabel):
+    """클릭하면 editing_requested 시그널을 emit하는 라벨."""
+    editing_requested = Signal()
+
+    def mouseDoubleClickEvent(self, event):
+        self.editing_requested.emit()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.editing_requested.emit()
+        super().mousePressEvent(event)
+
 
 class _SubTaskRow(QWidget):
-    """하위 할 일 한 줄 위젯."""
-
     def __init__(self, todo: Todo, manager: TodoManager, on_change):
         super().__init__()
         self.todo = todo
         self.manager = manager
         self.on_change = on_change
+        self._editing = False
         self._build()
 
     def _build(self):
@@ -204,27 +271,63 @@ class _SubTaskRow(QWidget):
         row.setContentsMargins(28, 1, 6, 1)
         row.setSpacing(6)
 
-        cb = QCheckBox()
-        cb.setChecked(self.todo.completed)
-        cb.setStyleSheet(_SUB_CB_STYLE)
-        cb.stateChanged.connect(self._toggle)
+        self._cb = QCheckBox()
+        self._cb.setChecked(self.todo.completed)
+        self._cb.setStyleSheet(_SUB_CB_STYLE)
+        self._cb.stateChanged.connect(self._toggle)
 
-        text = QLabel(self.todo.text)
-        text.setWordWrap(True)
-        text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._text_lbl = _ClickableLabel(self.todo.text)
+        self._text_lbl.setWordWrap(True)
+        self._text_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._text_lbl.editing_requested.connect(self._start_edit)
         if self.todo.completed:
-            text.setStyleSheet("color: rgba(255,255,255,55); text-decoration: line-through; font-size: 12px;")
+            self._text_lbl.setStyleSheet("color: rgba(255,255,255,55); text-decoration: line-through; font-size: 12px;")
         else:
-            text.setStyleSheet("color: rgba(255,255,255,150); font-size: 12px;")
+            self._text_lbl.setStyleSheet("color: rgba(255,255,255,150); font-size: 12px;")
+
+        self._edit_input = QLineEdit(self.todo.text)
+        self._edit_input.setStyleSheet(_SUB_INLINE_EDIT_STYLE)
+        self._edit_input.hide()
+        self._edit_input.returnPressed.connect(self._commit_edit)
+        self._edit_input.installEventFilter(self)
 
         del_btn = QPushButton("✕")
         del_btn.setFixedSize(18, 18)
         del_btn.setStyleSheet(_DEL_BTN_STYLE)
         del_btn.clicked.connect(self._delete)
 
-        row.addWidget(cb)
-        row.addWidget(text, 1)
+        row.addWidget(self._cb)
+        row.addWidget(self._text_lbl, 1)
+        row.addWidget(self._edit_input, 1)
         row.addWidget(del_btn)
+
+    def eventFilter(self, obj, event):
+        from PySide6.QtCore import QEvent
+        if obj is self._edit_input and event.type() == QEvent.Type.FocusOut:
+            self._commit_edit()
+        return super().eventFilter(obj, event)
+
+    def _start_edit(self):
+        if self.todo.completed:
+            return
+        self._editing = True
+        self._edit_input.setText(self.todo.text)
+        self._text_lbl.hide()
+        self._edit_input.show()
+        self._edit_input.setFocus()
+        self._edit_input.selectAll()
+
+    def _commit_edit(self):
+        if not self._editing:
+            return
+        self._editing = False
+        text = self._edit_input.text().strip()
+        if text and text != self.todo.text:
+            self.manager.update_text(self.todo.id, text)
+            self.on_change()
+        else:
+            self._text_lbl.show()
+            self._edit_input.hide()
 
     def _toggle(self):
         self.manager.toggle_complete(self.todo.id)
@@ -236,40 +339,95 @@ class _SubTaskRow(QWidget):
 
 
 class _TodoItemWidget(QFrame):
-    def __init__(self, todo: Todo, manager: TodoManager, on_change, sub_tasks: list | None = None):
+    move_up_requested   = Signal(str)
+    move_down_requested = Signal(str)
+
+    def __init__(self, todo: Todo, manager: TodoManager, on_change, sub_tasks: list | None = None,
+                 is_first: bool = False, is_last: bool = False):
         super().__init__()
         self.todo = todo
         self.manager = manager
         self.on_change = on_change
         self.sub_tasks = sub_tasks or []
+        self._editing = False
+        self._is_first = is_first
+        self._is_last = is_last
         self.setObjectName("item")
         self.setStyleSheet(_ITEM_STYLE)
         self._build()
 
     def _build(self):
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(10, 8, 10, 6)
+        outer.setContentsMargins(6, 8, 10, 6)
         outer.setSpacing(2)
 
-        # ── 메인 행 ─────────────────────────────────────────────────────────
         row = QHBoxLayout()
-        row.setSpacing(8)
+        row.setSpacing(6)
+
+        # ── 드래그 핸들 (위/아래 화살표 버튼) ──────────────────────────────
+        handle_col = QVBoxLayout()
+        handle_col.setSpacing(0)
+        handle_col.setContentsMargins(0, 0, 0, 0)
+
+        up_btn = QPushButton("▲")
+        up_btn.setFixedSize(14, 14)
+        up_btn.setStyleSheet("""
+QPushButton {
+    background: transparent;
+    color: rgba(255,255,255,40);
+    border: none;
+    font-size: 8px;
+    padding: 0;
+}
+QPushButton:hover { color: rgba(255,255,255,180); }
+QPushButton:disabled { color: rgba(255,255,255,15); }
+""")
+        up_btn.clicked.connect(lambda: self.move_up_requested.emit(self.todo.id))
+        up_btn.setEnabled(not self._is_first and not self.todo.completed)
+
+        down_btn = QPushButton("▼")
+        down_btn.setFixedSize(14, 14)
+        down_btn.setStyleSheet("""
+QPushButton {
+    background: transparent;
+    color: rgba(255,255,255,40);
+    border: none;
+    font-size: 8px;
+    padding: 0;
+}
+QPushButton:hover { color: rgba(255,255,255,180); }
+QPushButton:disabled { color: rgba(255,255,255,15); }
+""")
+        down_btn.clicked.connect(lambda: self.move_down_requested.emit(self.todo.id))
+        down_btn.setEnabled(not self._is_last and not self.todo.completed)
+
+        handle_col.addWidget(up_btn)
+        handle_col.addWidget(down_btn)
 
         cb = QCheckBox()
         cb.setChecked(self.todo.completed)
         cb.setStyleSheet(_CB_STYLE)
         cb.stateChanged.connect(self._toggle)
 
-        text = QLabel(self.todo.text)
-        text.setWordWrap(True)
-        text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._text_lbl = _ClickableLabel(self.todo.text)
+        self._text_lbl.setWordWrap(True)
+        self._text_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._text_lbl.editing_requested.connect(self._start_edit)
         if self.todo.completed:
-            text.setStyleSheet("color: rgba(255,255,255,80); text-decoration: line-through; font-size: 13px;")
+            self._text_lbl.setStyleSheet("color: rgba(255,255,255,80); text-decoration: line-through; font-size: 13px;")
         else:
-            text.setStyleSheet("color: rgba(255,255,255,210); font-size: 13px;")
+            self._text_lbl.setStyleSheet("color: rgba(255,255,255,210); font-size: 13px;")
 
+        self._edit_input = QLineEdit(self.todo.text)
+        self._edit_input.setStyleSheet(_INLINE_EDIT_STYLE)
+        self._edit_input.hide()
+        self._edit_input.returnPressed.connect(self._commit_edit)
+        self._edit_input.installEventFilter(self)
+
+        row.addLayout(handle_col)
         row.addWidget(cb)
-        row.addWidget(text, 1)
+        row.addWidget(self._text_lbl, 1)
+        row.addWidget(self._edit_input, 1)
 
         # 하위 할 일 개수 뱃지
         if self.sub_tasks:
@@ -295,7 +453,7 @@ class _TodoItemWidget(QFrame):
 
         # ── 타임스탬프 행 ────────────────────────────────────────────────────
         ts_row = QHBoxLayout()
-        ts_row.setContentsMargins(24, 0, 0, 0)
+        ts_row.setContentsMargins(30, 0, 0, 0)
         ts_row.setSpacing(0)
 
         created = QLabel(f"추가: {_fmt(self.todo.created_at)}")
@@ -326,7 +484,7 @@ class _TodoItemWidget(QFrame):
             for sub in self.sub_tasks:
                 outer.addWidget(_SubTaskRow(sub, self.manager, self.on_change))
 
-        # ── 하위 할 일 입력창 (기본 숨김) ─────────────────────────────────────
+        # ── 하위 할 일 입력창 ─────────────────────────────────────────────────
         self._sub_inp_container = QWidget()
         sub_inp_row = QHBoxLayout(self._sub_inp_container)
         sub_inp_row.setContentsMargins(28, 4, 6, 2)
@@ -347,6 +505,34 @@ class _TodoItemWidget(QFrame):
         sub_inp_row.addWidget(sub_add_btn)
         self._sub_inp_container.hide()
         outer.addWidget(self._sub_inp_container)
+
+    def eventFilter(self, obj, event):
+        from PySide6.QtCore import QEvent
+        if obj is self._edit_input and event.type() == QEvent.Type.FocusOut:
+            self._commit_edit()
+        return super().eventFilter(obj, event)
+
+    def _start_edit(self):
+        if self.todo.completed:
+            return
+        self._editing = True
+        self._edit_input.setText(self.todo.text)
+        self._text_lbl.hide()
+        self._edit_input.show()
+        self._edit_input.setFocus()
+        self._edit_input.selectAll()
+
+    def _commit_edit(self):
+        if not self._editing:
+            return
+        self._editing = False
+        text = self._edit_input.text().strip()
+        if text and text != self.todo.text:
+            self.manager.update_text(self.todo.id, text)
+            self.on_change()
+        else:
+            self._text_lbl.show()
+            self._edit_input.hide()
 
     def _toggle_sub_input(self, checked: bool):
         if checked:
@@ -382,17 +568,23 @@ _SYNC_COLORS = {
 
 
 class OverlayWindow(QWidget):
+    todos_changed = Signal()
+
     def __init__(self, manager: TodoManager, settings: SettingsManager, checker):
         super().__init__()
         self.manager = manager
         self.settings = settings
         self._log_mode = False
+        self._pinned = False
         self._anim: QPropertyAnimation | None = None
         self._refresh_fingerprint: tuple = ()
         self._leave_timer = QTimer(self)
         self._leave_timer.setSingleShot(True)
         self._leave_timer.setInterval(400)
         self._leave_timer.timeout.connect(self._animated_hide)
+        # 오버레이가 표시될 디스플레이 원점 (다중 디스플레이)
+        self._origin_x = 12
+        self._origin_y = 12
         self._setup_window()
         self._build_ui()
         self._settings_dialog = SettingsDialog(self.settings, checker)
@@ -403,11 +595,10 @@ class OverlayWindow(QWidget):
         )
 
     def _setup_window(self):
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-        )
+        flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+        if platform.system() != "Darwin":
+            flags |= Qt.WindowType.Tool
+        self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedWidth(380)
         self.move(12, 12)
@@ -450,6 +641,14 @@ class OverlayWindow(QWidget):
         self._settings_btn.setToolTip("설정")
         self._settings_btn.clicked.connect(self._open_settings)
 
+        # 핀(고정) 버튼
+        self._pin_btn = QPushButton("📌")
+        self._pin_btn.setFixedSize(24, 24)
+        self._pin_btn.setStyleSheet(_PIN_BTN_STYLE_OFF)
+        self._pin_btn.setToolTip("창 고정 (마우스가 떠나도 닫히지 않음)")
+        self._pin_btn.setCheckable(True)
+        self._pin_btn.clicked.connect(self._toggle_pin)
+
         close_btn = QPushButton("✕")
         close_btn.setFixedSize(24, 24)
         close_btn.setStyleSheet(_CLOSE_BTN_STYLE)
@@ -464,6 +663,8 @@ class OverlayWindow(QWidget):
         hdr.addWidget(self._log_btn)
         hdr.addSpacing(4)
         hdr.addWidget(self._settings_btn)
+        hdr.addSpacing(4)
+        hdr.addWidget(self._pin_btn)
         hdr.addSpacing(4)
         hdr.addWidget(close_btn)
 
@@ -512,7 +713,6 @@ class OverlayWindow(QWidget):
 
         self._scroll.setWidget(self._list_widget)
 
-        # ── Empty state label ────────────────────────────────────────────────
         self._empty_lbl = QLabel("할 일이 없습니다 🎉")
         self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_lbl.setStyleSheet("color: rgba(255,255,255,50); font-size: 13px; padding: 24px 0;")
@@ -526,6 +726,12 @@ class OverlayWindow(QWidget):
         self._sync_manager = None
         self._refresh()
 
+    def _toggle_pin(self, checked: bool):
+        self._pinned = checked
+        self._pin_btn.setStyleSheet(_PIN_BTN_STYLE_ON if checked else _PIN_BTN_STYLE_OFF)
+        if checked:
+            self._leave_timer.stop()
+
     def _add(self):
         text = self._input.text().strip()
         if text:
@@ -538,7 +744,6 @@ class OverlayWindow(QWidget):
     def _refresh(self):
         todos = self.manager.get_all()
 
-        # 최상위 / 하위 분류
         sub_map: dict[str, list] = {}
         top_incomplete: list = []
         top_complete:   list = []
@@ -550,16 +755,18 @@ class OverlayWindow(QWidget):
             else:
                 top_incomplete.append(t)
 
-        # 하위 항목 정렬: 미완료 먼저, 생성 시간 순
         for lst in sub_map.values():
             lst.sort(key=lambda t: (t.completed, t.created_at or ""))
+
+        # 미완료는 order 순, 완료는 completed_at 역순
+        top_incomplete.sort(key=lambda t: t.order)
+        top_complete.sort(key=lambda t: t.completed_at or "", reverse=True)
 
         display    = top_complete if self._log_mode else (top_incomplete + top_complete)
         empty_text = "완료된 항목이 없습니다" if self._log_mode else "할 일이 없습니다 🎉"
 
-        # 내용이 바뀐 경우에만 위젯 재구성 (불필요한 rebuild 방지)
         fingerprint = tuple(
-            (t.id, t.completed, t.text,
+            (t.id, t.completed, t.text, t.order,
              tuple((s.id, s.completed, s.text) for s in sub_map.get(t.id, [])))
             for t in display
         )
@@ -577,9 +784,18 @@ class OverlayWindow(QWidget):
             else:
                 self._empty_lbl.hide()
                 self._scroll.show()
-                for todo in display:
+                incomplete_ids = {t.id for t in top_incomplete}
+                for i, todo in enumerate(display):
                     subs = sub_map.get(todo.id, [])
-                    w = _TodoItemWidget(todo, self.manager, self._on_todo_changed, subs)
+                    is_incomplete = todo.id in incomplete_ids
+                    is_first = is_incomplete and i == 0
+                    is_last  = is_incomplete and (i == len(top_incomplete) - 1)
+                    w = _TodoItemWidget(
+                        todo, self.manager, self._on_todo_changed, subs,
+                        is_first=is_first, is_last=is_last,
+                    )
+                    w.move_up_requested.connect(self._move_up)
+                    w.move_down_requested.connect(self._move_down)
                     self._list_layout.insertWidget(self._list_layout.count() - 1, w)
             self.adjustSize()
 
@@ -587,7 +803,22 @@ class OverlayWindow(QWidget):
         total = len(top_incomplete) + len(top_complete)
         self._count_lbl.setText(f"{done}/{total}" if total else "")
 
+    def _move_up(self, todo_id: str):
+        self.manager.move_up(todo_id)
+        self._refresh_fingerprint = ()
+        self._refresh()
+        if self._sync_manager:
+            self._sync_manager.push_now()
+
+    def _move_down(self, todo_id: str):
+        self.manager.move_down(todo_id)
+        self._refresh_fingerprint = ()
+        self._refresh()
+        if self._sync_manager:
+            self._sync_manager.push_now()
+
     def _on_todo_changed(self):
+        self._refresh_fingerprint = ()
         self._refresh()
         if self._sync_manager:
             self._sync_manager.push_now()
@@ -628,6 +859,11 @@ class OverlayWindow(QWidget):
         if self._anim and self._anim.state() == QPropertyAnimation.State.Running:
             self._anim.stop()
 
+    def set_display_origin(self, x: int, y: int):
+        """어느 디스플레이 코너에서 트리거됐는지 기록."""
+        self._origin_x = x + 12
+        self._origin_y = y + 12
+
     def _animated_show(self):
         self._stop_anim()
         self._refresh()
@@ -636,21 +872,25 @@ class OverlayWindow(QWidget):
         self.raise_()
         self._input.setFocus()
 
+        ox, oy = self._origin_x, self._origin_y
+
         if not self.settings.animation:
-            self.move(12, 12)
+            self.move(ox, oy)
             return
 
         h = self.sizeHint().height() or self.height() or 300
         self._anim = QPropertyAnimation(self, b"pos", self)
         self._anim.setDuration(self.settings.anim_duration)
-        self._anim.setStartValue(QPoint(12, -h))
-        self._anim.setEndValue(QPoint(12, 12))
+        self._anim.setStartValue(QPoint(ox, oy - h))
+        self._anim.setEndValue(QPoint(ox, oy))
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._anim.start()
 
     def _animated_hide(self):
         self._stop_anim()
         if not self.isVisible():
+            return
+        if self._pinned:
             return
 
         if not self.settings.animation:
@@ -660,10 +900,11 @@ class OverlayWindow(QWidget):
         self._leave_timer.stop()
         dur = max(60, self.settings.anim_duration - 40)
         h   = self.height() or 300
+        cur = self.pos()
         self._anim = QPropertyAnimation(self, b"pos", self)
         self._anim.setDuration(dur)
-        self._anim.setStartValue(QPoint(12, 12))
-        self._anim.setEndValue(QPoint(12, -h))
+        self._anim.setStartValue(cur)
+        self._anim.setEndValue(QPoint(cur.x(), cur.y() - h))
         self._anim.setEasingCurve(QEasingCurve.Type.InCubic)
         self._anim.finished.connect(super().hide)
         self._anim.start()
@@ -681,7 +922,11 @@ class OverlayWindow(QWidget):
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        self._leave_timer.start()
+        if self._pinned:
+            super().leaveEvent(event)
+            return
+        if not self.rect().contains(self.mapFromGlobal(QCursor.pos())):
+            self._leave_timer.start()
         super().leaveEvent(event)
 
     def keyPressEvent(self, event):

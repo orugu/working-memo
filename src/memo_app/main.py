@@ -157,13 +157,30 @@ def main():
             for i, ((left, top, _r, _b), cfg) in enumerate(zip(phys_rects, configs))
         ]
 
-    monitor = CornerMonitor(corners=_build_corners())
-    monitor.corner_triggered.connect(overlay.toggle)
+    monitor = CornerMonitor(
+        corners=_build_corners(),
+        quick_key=settings.quick_key,
+        trigger_mode=settings.trigger_mode,
+    )
+    def _on_corner_triggered(origin_x: int, origin_y: int):
+        overlay.set_display_origin(origin_x, origin_y)
+        overlay.toggle()
+
+    monitor.corner_triggered.connect(_on_corner_triggered)
     monitor.start()
 
-    overlay._settings_dialog.displays_changed.connect(
-        lambda: setattr(monitor, "corners", _build_corners())
-    )
+    def _on_displays_changed():
+        monitor.corners = _build_corners()
+
+    def _on_trigger_changed(mode: str, key: str):
+        monitor.stop_listeners()
+        monitor.wait()
+        monitor.trigger_mode = mode
+        monitor.quick_key    = key
+        monitor.start()
+
+    overlay._settings_dialog.displays_changed.connect(_on_displays_changed)
+    overlay._settings_dialog.trigger_changed.connect(_on_trigger_changed)
 
     def _cleanup():
         monitor.stop_listeners()

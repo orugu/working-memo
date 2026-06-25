@@ -22,6 +22,9 @@ _DEFAULTS = {
     "anim_duration":    220,
     # ── 디스플레이별 코너 설정 [{corner_size, enabled}, ...] ─────────────
     "display_configs":  [],
+    # ── 트리거 ───────────────────────────────────────────────────────────
+    "trigger_mode": "corner_key",   # "corner_key" | "key_only"
+    "quick_key":    "ctrl",         # "ctrl" | "alt" | "shift" | "cmd" | "f1"–"f12"
 }
 
 
@@ -154,6 +157,22 @@ class SettingsManager:
     @anim_duration.setter
     def anim_duration(self, v: int):
         self._data["anim_duration"] = max(80, min(600, v)); self._save()
+
+    @property
+    def trigger_mode(self) -> str:
+        return self._data.get("trigger_mode", "corner_key")
+
+    @trigger_mode.setter
+    def trigger_mode(self, v: str):
+        self._data["trigger_mode"] = v; self._save()
+
+    @property
+    def quick_key(self) -> str:
+        return self._data.get("quick_key", "ctrl")
+
+    @quick_key.setter
+    def quick_key(self, v: str):
+        self._data["quick_key"] = v; self._save()
 
     # display_name / email 은 하위호환용 alias
     @property

@@ -18,6 +18,7 @@ class Todo:
         synced: bool = False,
         deleted: bool = False,
         parent_id: str | None = None,
+        order: int = 0,
     ):
         self.id = id or str(uuid.uuid4())
         self.text = text
@@ -28,6 +29,7 @@ class Todo:
         self.synced = synced
         self.deleted = deleted
         self.parent_id = parent_id
+        self.order = order
 
     def to_dict(self) -> dict:
         return {
@@ -40,6 +42,7 @@ class Todo:
             "synced": self.synced,
             "deleted": self.deleted,
             "parent_id": self.parent_id,
+            "order": self.order,
         }
 
     @classmethod
@@ -54,6 +57,7 @@ class Todo:
             synced=d.get("synced", False),
             deleted=d.get("deleted", False),
             parent_id=d.get("parent_id"),
+            order=d.get("order", 0),
         )
 
 
@@ -86,12 +90,58 @@ class TodoManager:
 
     # ── 쓰기 ─────────────────────────────────────────────────────────────
 
+    def _next_order(self, parent_id: str | None) -> int:
+        top = [t for t in self._todos if not t.deleted and t.parent_id == parent_id]
+        return (max((t.order for t in top), default=-1) + 1) if top else 0
+
     def add(self, text: str, parent_id: str | None = None) -> Todo:
         with self._lock:
-            todo = Todo(text=text.strip(), parent_id=parent_id)
+            todo = Todo(text=text.strip(), parent_id=parent_id, order=self._next_order(parent_id))
             self._todos.append(todo)
             self._save()
             return todo
+
+    def update_text(self, todo_id: str, text: str) -> Todo | None:
+        with self._lock:
+            for todo in self._todos:
+                if todo.id == todo_id:
+                    todo.text = text.strip()
+                    self._touch(todo)
+                    self._save()
+                    return todo
+        return None
+
+    def move_up(self, todo_id: str):
+        with self._lock:
+            target = next((t for t in self._todos if t.id == todo_id), None)
+            if not target:
+                return
+            peers = sorted(
+                [t for t in self._todos if not t.deleted and t.parent_id == target.parent_id and not t.completed],
+                key=lambda t: t.order,
+            )
+            idx = next((i for i, t in enumerate(peers) if t.id == todo_id), -1)
+            if idx > 0:
+                peers[idx].order, peers[idx - 1].order = peers[idx - 1].order, peers[idx].order
+                self._touch(peers[idx])
+                self._touch(peers[idx - 1])
+                self._save()
+
+    def move_down(self, todo_id: str):
+        with self._lock:
+            target = next((t for t in self._todos if t.id == todo_id), None)
+            if not target:
+                return
+            peers = sorted(
+                [t for t in self._todos if not t.deleted and t.parent_id == target.parent_id and not t.completed],
+                key=lambda t: t.order,
+            )
+            idx = next((i for i, t in enumerate(peers) if t.id == todo_id), -1)
+            if idx >= 0 and idx < len(peers) - 1:
+                peers[idx].order, peers[idx + 1].order = peers[idx + 1].order, peers[idx].order
+                self._touch(peers[idx])
+                self._touch(peers[idx + 1])
+                self._save()
 
     def toggle_complete(self, todo_id: str) -> Todo | None:
         with self._lock:

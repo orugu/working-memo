@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -8,6 +9,8 @@ import urllib.error
 import urllib.request
 import json
 from pathlib import Path
+
+import certifi
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 
@@ -76,8 +79,9 @@ class _CheckWorker(QRunnable):
     @Slot()
     def run(self):
         try:
+            ssl_ctx = ssl.create_default_context(cafile=certifi.where())
             req = urllib.request.Request(_API_URL, headers=_HEADERS)
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=10, context=ssl_ctx) as resp:
                 data: dict = json.loads(resp.read())
 
             latest  = data["tag_name"].lstrip("v")
@@ -111,11 +115,20 @@ class _DownloadWorker(QRunnable):
             suffix = ".exe" if platform.system() == "Windows" else ".tar.gz"
             tmp = tempfile.mktemp(suffix=suffix, prefix="WorkingMemo_update_")
 
-            def _hook(blocks, block_size, total):
-                downloaded = min(blocks * block_size, total if total > 0 else blocks * block_size)
-                self._c.download_progress.emit(downloaded, max(total, 0))
-
-            urllib.request.urlretrieve(self._url, tmp, reporthook=_hook)
+            ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+            req = urllib.request.Request(self._url, headers=_HEADERS)
+            with urllib.request.urlopen(req, timeout=60, context=ssl_ctx) as resp:
+                total = int(resp.headers.get("Content-Length", 0))
+                downloaded = 0
+                chunk = 8192
+                with open(tmp, "wb") as f:
+                    while True:
+                        data = resp.read(chunk)
+                        if not data:
+                            break
+                        f.write(data)
+                        downloaded += len(data)
+                        self._c.download_progress.emit(downloaded, total)
             self._c.download_done.emit(tmp)
         except Exception as e:
             self._c.download_failed.emit(str(e))

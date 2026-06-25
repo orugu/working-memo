@@ -161,7 +161,9 @@ def main():
         corners=_build_corners(),
         quick_key=settings.quick_key,
         trigger_mode=settings.trigger_mode,
+        display_rects=get_physical_monitor_rects(),
     )
+
     def _on_corner_triggered(origin_x: int, origin_y: int):
         overlay.set_display_origin(origin_x, origin_y)
         overlay.toggle()
@@ -171,6 +173,7 @@ def main():
 
     def _on_displays_changed():
         monitor.corners = _build_corners()
+        monitor.display_rects = get_physical_monitor_rects()
 
     def _on_trigger_changed(mode: str, key: str):
         monitor.stop_listeners()

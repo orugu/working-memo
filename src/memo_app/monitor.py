@@ -101,11 +101,14 @@ class CornerMonitor(QThread):
         corners: list[DisplayCorner] | None = None,
         quick_key: str = "ctrl",
         trigger_mode: str = "corner_key",
+        display_rects: list[tuple[int, int, int, int]] | None = None,
     ):
         super().__init__()
         self.corners: list[DisplayCorner] = corners if corners is not None else [DisplayCorner(0, 0, 20)]
         self.quick_key    = quick_key
         self.trigger_mode = trigger_mode
+        # 메인 스레드에서 미리 계산된 디스플레이 영역 (worker thread에서 Qt 호출 방지)
+        self.display_rects: list[tuple[int, int, int, int]] = display_rects or []
         self._key_pressed  = False
         self._was_in_corner = False
         self._mouse_x = 0
@@ -131,6 +134,17 @@ class CornerMonitor(QThread):
                 return c.origin_x, c.origin_y
         return 0, 0
 
+    def _display_origin_for_pos(self, x: int, y: int) -> tuple[int, int]:
+        """마우스 위치가 속한 디스플레이의 좌상단 origin 반환 (thread-safe: Qt 호출 없음)."""
+        for left, top, right, bottom in self.display_rects:
+            if left <= x < right and top <= y < bottom:
+                return left, top
+        # fallback: 코너 중 가장 가까운 것
+        if self.corners:
+            nearest = min(self.corners, key=lambda c: abs(c.origin_x - x) + abs(c.origin_y - y))
+            return nearest.origin_x, nearest.origin_y
+        return 0, 0
+
     def _matches(self, key) -> bool:
         name = self.quick_key
         if name in _MOD_KEYS:
@@ -149,7 +163,7 @@ class CornerMonitor(QThread):
             if self.trigger_mode == "corner_key":
                 in_corner = self._in_any_corner(x, y)
                 if self._key_pressed and in_corner and not self._was_in_corner:
-                    ox, oy = self._corner_origin(x, y)
+                    ox, oy = self._display_origin_for_pos(x, y)
                     self.corner_triggered.emit(ox, oy)
                 self._was_in_corner = in_corner
 
@@ -158,7 +172,7 @@ class CornerMonitor(QThread):
                 return
             self._key_pressed = True
             if self.trigger_mode == "key_only":
-                ox, oy = self._corner_origin(self._mouse_x, self._mouse_y)
+                ox, oy = self._display_origin_for_pos(self._mouse_x, self._mouse_y)
                 self.corner_triggered.emit(ox, oy)
             elif self._in_any_corner(self._mouse_x, self._mouse_y):
                 ox, oy = self._corner_origin(self._mouse_x, self._mouse_y)

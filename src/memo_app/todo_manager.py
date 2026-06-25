@@ -77,6 +77,24 @@ class TodoManager:
                 self._todos = [Todo.from_dict(d) for d in data]
             except Exception:
                 self._todos = []
+        self._migrate_orders()
+
+    def _migrate_orders(self):
+        """order 필드가 중복이거나 모두 0인 경우 생성 시간 순으로 재할당."""
+        groups: dict = {}
+        for t in self._todos:
+            if not t.deleted:
+                groups.setdefault(t.parent_id, []).append(t)
+        changed = False
+        for items in groups.values():
+            orders = [t.order for t in items]
+            if len(orders) != len(set(orders)):
+                items.sort(key=lambda t: t.created_at or "")
+                for i, t in enumerate(items):
+                    t.order = i
+                changed = True
+        if changed:
+            self._save()
 
     def _save(self):
         self.path.write_text(

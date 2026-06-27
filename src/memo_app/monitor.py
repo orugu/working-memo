@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import platform
+import queue
 from dataclasses import dataclass
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread, QTimer, Signal
 from pynput import keyboard, mouse
 
 _IS_MAC = platform.system() == "Darwin"
@@ -91,10 +92,14 @@ class CornerMonitor(QThread):
     """
     트리거 방식:
       corner_key — 마우스가 코너에 있을 때 퀵키 입력
-      key_only   — 마우스 위치 무관, 퀵키만 입력 (macOS는 Quartz로 키 억제)
+      key_only   — 마우스 위치 무관, 퀵키만 입력
+
+    pynput 콜백은 네이티브 스레드에서 실행되므로 Qt 시그널을 직접 emit하면
+    크로스-스레드 문제가 발생한다. 대신 SimpleQueue에 넣고, 메인 스레드
+    QTimer가 주기적으로 드레인하여 안전하게 시그널을 emit한다.
     """
 
-    corner_triggered = Signal(int, int)  # (origin_x, origin_y) of the triggered display
+    corner_triggered = Signal(int, int)  # (origin_x, origin_y)
 
     def __init__(
         self,
@@ -107,14 +112,51 @@ class CornerMonitor(QThread):
         self.corners: list[DisplayCorner] = corners if corners is not None else [DisplayCorner(0, 0, 20)]
         self.quick_key    = quick_key
         self.trigger_mode = trigger_mode
-        # 메인 스레드에서 미리 계산된 디스플레이 영역 (worker thread에서 Qt 호출 방지)
         self.display_rects: list[tuple[int, int, int, int]] = display_rects or []
-        self._key_pressed  = False
+        self._key_pressed   = False
         self._was_in_corner = False
         self._mouse_x = 0
         self._mouse_y = 0
         self._mouse_listener: mouse.Listener | None = None
         self._key_listener:   keyboard.Listener | None = None
+        self.events_received: int = 0  # pynput 권한 체크용 카운터
+
+        # pynput → 메인 스레드 안전 전달 채널
+        self._trigger_queue: queue.SimpleQueue = queue.SimpleQueue()
+        self._drain_timer = QTimer(self)
+        self._drain_timer.setInterval(25)  # 25ms ≈ 40fps
+        self._drain_timer.timeout.connect(self._drain_triggers)
+
+    # ── 메인 스레드에서 트리거 큐 드레인 ────────────────────────────────────
+
+    def _drain_triggers(self) -> None:
+        while not self._trigger_queue.empty():
+            try:
+                ox, oy = self._trigger_queue.get_nowait()
+                self.corner_triggered.emit(ox, oy)
+            except Exception:
+                break
+
+    # ── QThread 시작/정지 ────────────────────────────────────────────────────
+
+    def start(self, priority: QThread.Priority = QThread.Priority.InheritPriority) -> None:
+        self._drain_timer.start()
+        super().start(priority)
+
+    def stop_listeners(self) -> None:
+        self._drain_timer.stop()
+        if self._mouse_listener:
+            try:
+                self._mouse_listener.stop()
+            except Exception:
+                pass
+        if self._key_listener:
+            try:
+                self._key_listener.stop()
+            except Exception:
+                pass
+
+    # ── 헬퍼 ─────────────────────────────────────────────────────────────────
 
     @property
     def corner_size(self) -> int:
@@ -135,11 +177,10 @@ class CornerMonitor(QThread):
         return 0, 0
 
     def _display_origin_for_pos(self, x: int, y: int) -> tuple[int, int]:
-        """마우스 위치가 속한 디스플레이의 좌상단 origin 반환 (thread-safe: Qt 호출 없음)."""
+        """마우스 위치가 속한 디스플레이의 좌상단 origin (thread-safe: Qt 호출 없음)."""
         for left, top, right, bottom in self.display_rects:
             if left <= x < right and top <= y < bottom:
                 return left, top
-        # fallback: 코너 중 가장 가까운 것
         if self.corners:
             nearest = min(self.corners, key=lambda c: abs(c.origin_x - x) + abs(c.origin_y - y))
             return nearest.origin_x, nearest.origin_y
@@ -156,47 +197,49 @@ class CornerMonitor(QThread):
             return key.char.lower() == name
         return False
 
-    def run(self):
-        def on_move(x, y):
+    # ── 리스너 스레드 ─────────────────────────────────────────────────────────
+
+    def run(self) -> None:
+        self._key_pressed   = False
+        self._was_in_corner = False
+
+        # pynput 콜백에서 직접 queue에 넣기만 함 — Qt/GUI 호출 없음
+        def _enqueue(ox: int, oy: int) -> None:
+            self._trigger_queue.put((ox, oy))
+
+        def on_move(x: int, y: int) -> None:
+            self.events_received += 1
             self._mouse_x = x
             self._mouse_y = y
             if self.trigger_mode == "corner_key":
                 in_corner = self._in_any_corner(x, y)
                 if self._key_pressed and in_corner and not self._was_in_corner:
                     ox, oy = self._display_origin_for_pos(x, y)
-                    self.corner_triggered.emit(ox, oy)
+                    _enqueue(ox, oy)
                 self._was_in_corner = in_corner
 
-        def on_press(key):
+        def on_press(key) -> None:
+            self.events_received += 1
             if not self._matches(key):
+                return
+            if self._key_pressed:  # key repeat 무시
                 return
             self._key_pressed = True
             if self.trigger_mode == "key_only":
                 ox, oy = self._display_origin_for_pos(self._mouse_x, self._mouse_y)
-                self.corner_triggered.emit(ox, oy)
+                _enqueue(ox, oy)
             elif self._in_any_corner(self._mouse_x, self._mouse_y):
                 ox, oy = self._corner_origin(self._mouse_x, self._mouse_y)
-                self.corner_triggered.emit(ox, oy)
+                _enqueue(ox, oy)
+                self._was_in_corner = True  # on_move 중복 트리거 방지
 
-        def on_release(key):
+        def on_release(key) -> None:
+            self.events_received += 1
             if self._matches(key):
-                self._key_pressed = False
+                self._key_pressed   = False
                 self._was_in_corner = False
 
         listener_kwargs: dict = {"on_press": on_press, "on_release": on_release}
-
-        # macOS: key_only 모드에서 Quartz로 트리거 키를 다른 앱에 전달하지 않음
-        if _HAS_QUARTZ and self.trigger_mode == "key_only":
-            codes = _DARWIN_KEY_CODES.get(self.quick_key, set())
-            if codes:
-                def _darwin_intercept(event_type, event):
-                    key_code = _Quartz.CGEventGetIntegerValueField(
-                        event, _Quartz.kCGKeyboardEventKeycode
-                    )
-                    if key_code in codes:
-                        return None  # 억제: 다른 앱에 전달 안 됨
-                    return event
-                listener_kwargs["darwin_intercept"] = _darwin_intercept
 
         self._mouse_listener = mouse.Listener(on_move=on_move)
         self._key_listener   = keyboard.Listener(**listener_kwargs)
@@ -205,9 +248,3 @@ class CornerMonitor(QThread):
         self._key_listener.start()
         self._mouse_listener.join()
         self._key_listener.join()
-
-    def stop_listeners(self):
-        if self._mouse_listener:
-            self._mouse_listener.stop()
-        if self._key_listener:
-            self._key_listener.stop()

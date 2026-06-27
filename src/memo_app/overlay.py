@@ -868,6 +868,13 @@ class OverlayWindow(QWidget):
         self._stop_anim()
         self._refresh()
         super().show()
+        # macOS Accessory 정책에서는 앱이 포그라운드로 올라오지 않으므로 명시적으로 활성화
+        if platform.system() == "Darwin":
+            try:
+                import AppKit
+                AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+            except Exception:
+                pass
         self.activateWindow()
         self.raise_()
         self._input.setFocus()

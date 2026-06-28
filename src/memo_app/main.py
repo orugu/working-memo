@@ -116,6 +116,8 @@ def _already_running() -> bool:
         sock.flush()
         sock.disconnectFromServer()
         return True
+    # 연결 실패 → stale 소켓 파일이 남아 있을 수 있으므로 정리
+    QLocalServer.removeServer(_INSTANCE_KEY)
     return False
 
 
@@ -320,6 +322,9 @@ def main():
 
     def _cleanup():
         monitor.stop_listeners()
+        monitor.wait(3000)  # pynput CFRunLoop가 완전히 멈출 때까지 대기
+        if monitor.isRunning():
+            monitor.terminate()  # 3초 후에도 살아있으면 강제 종료
         db.disconnect()
         QLocalServer.removeServer(_INSTANCE_KEY)
 

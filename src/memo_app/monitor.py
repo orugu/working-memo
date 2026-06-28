@@ -9,13 +9,40 @@ from pynput import keyboard, mouse
 
 _IS_MAC = platform.system() == "Darwin"
 
-# macOS Quartz: key_only 모드에서 트리거 키가 다른 앱에 전달되지 않도록 억제
 _HAS_QUARTZ = False
 if _IS_MAC:
     try:
         import Quartz as _Quartz
         _HAS_QUARTZ = True
     except ImportError:
+        pass
+
+# ── macOS 26 (Tahoe) 호환성 패치 ─────────────────────────────────────────────
+# CGEventKeyboardGetUnicodeString 내부에서 TSMGetInputSourceProperty를 호출하는데,
+# macOS 26부터 메인 스레드에서만 허용되어 pynput 백그라운드 스레드에서 호출 시 크래시.
+# _event_to_key를 패치해 CGEventKeyboardGetUnicodeString 호출을 건너뛰고
+# 가상 키코드(vk)만으로 키를 식별한다. 트리거 키는 항상 수식어/함수키이므로 문제없음.
+if _IS_MAC and _HAS_QUARTZ:
+    try:
+        from pynput.keyboard._darwin import Listener as _DarwinKbListener
+        from pynput.keyboard import KeyCode as _KeyCode
+
+        def _patched_event_to_key(self, event):
+            vk = _Quartz.CGEventGetIntegerValueField(
+                event, _Quartz.kCGKeyboardEventKeycode
+            )
+            try:
+                from AppKit import NSSystemDefined as _NSD
+                is_media = True if _Quartz.CGEventGetType(event) == _NSD else None
+            except Exception:
+                is_media = None
+            key_tuple = (vk, is_media)
+            if key_tuple in self._SPECIAL_KEYS:
+                return self._SPECIAL_KEYS[key_tuple]
+            return _KeyCode.from_vk(vk)
+
+        _DarwinKbListener._event_to_key = _patched_event_to_key
+    except Exception:
         pass
 
 # macOS 가상 키코드 (Quartz 억제용)

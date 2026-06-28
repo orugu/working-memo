@@ -595,9 +595,10 @@ class OverlayWindow(QWidget):
         )
 
     def _setup_window(self):
-        flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
-        if platform.system() != "Darwin":
-            flags |= Qt.WindowType.Tool
+        # Tool: macOS에서 Accessory 정책 앱도 다른 앱 위로 올라올 수 있게 함
+        flags = (Qt.WindowType.FramelessWindowHint
+                 | Qt.WindowType.WindowStaysOnTopHint
+                 | Qt.WindowType.Tool)
         self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedWidth(380)
@@ -868,18 +869,36 @@ class OverlayWindow(QWidget):
         self._stop_anim()
         self._refresh()
         super().show()
-        # macOS Accessory 정책에서는 앱이 포그라운드로 올라오지 않으므로 명시적으로 활성화
+
+        # macOS: activateIgnoringOtherApps_(True)는 macOS 14+에서 무시됨.
+        # ctypes + objc로 NSView→NSWindow를 얻어 orderFrontRegardless() 호출.
         if platform.system() == "Darwin":
             try:
-                import AppKit
-                AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+                import ctypes, AppKit
+                import objc as _objc
+                ns_view = _objc.objc_object(
+                    c_void_p=ctypes.c_void_p(int(self.winId()))
+                )
+                ns_win = ns_view.window()
+                if ns_win:
+                    ns_win.orderFrontRegardless()
+                    ns_win.makeKeyWindow()
             except Exception:
                 pass
+
         self.activateWindow()
         self.raise_()
         self._input.setFocus()
 
         ox, oy = self._origin_x, self._origin_y
+
+        # 메뉴바 아래로 위치 보정 (availableGeometry.top() = 메뉴바 높이)
+        from PySide6.QtGui import QGuiApplication
+        screen = QGuiApplication.screenAt(QPoint(ox, oy + 50)) or QGuiApplication.primaryScreen()
+        if screen:
+            avail_top = screen.availableGeometry().top()
+            if oy < avail_top:
+                oy = avail_top
 
         if not self.settings.animation:
             self.move(ox, oy)

@@ -866,15 +866,8 @@ class OverlayWindow(QWidget):
         self._origin_y = y + 12
 
     def show_or_raise(self):
-        """모니터 트리거용: 이미 열려있으면 최상위로, 닫혀있으면 열기.
-        toggle() 대신 사용 — Cmd+Tab 후 overlay가 isVisible()=True인 채로
-        다른 앱 뒤에 있을 때 toggle()이 닫기 동작을 하는 문제를 방지."""
-        if self.isVisible():
-            self._mac_bring_to_front()
-            self.activateWindow()
-            self.raise_()
-        else:
-            self._animated_show()
+        """모니터 트리거용: 항상 현재 디스플레이 origin으로 이동 후 최상위 표시."""
+        self._animated_show()
 
     def _mac_bring_to_front(self):
         """macOS: orderFrontRegardless()로 다른 앱 위에 창을 올린다."""

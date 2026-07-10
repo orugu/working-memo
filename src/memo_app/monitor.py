@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import platform
 import queue
+import time
 from dataclasses import dataclass
 
 from PySide6.QtCore import QThread, QTimer, Signal
@@ -142,6 +143,7 @@ class CornerMonitor(QThread):
         self.display_rects: list[tuple[int, int, int, int]] = display_rects or []
         self._key_pressed   = False
         self._was_in_corner = False
+        self._key_press_time: float = 0.0
         self._mouse_x = 0
         self._mouse_y = 0
         self._mouse_listener: mouse.Listener | None = None
@@ -227,8 +229,33 @@ class CornerMonitor(QThread):
     # ── 리스너 스레드 ─────────────────────────────────────────────────────────
 
     def run(self) -> None:
-        self._key_pressed   = False
-        self._was_in_corner = False
+        self._key_pressed    = False
+        self._was_in_corner  = False
+        self._key_press_time = 0.0
+
+        # macOS: modifier key 에 대응하는 Quartz flag 비트
+        _modifier_flag: int = 0
+        if _IS_MAC and _HAS_QUARTZ:
+            _FLAG_MAP = {
+                "ctrl":  _Quartz.kCGEventFlagMaskControl,
+                "alt":   _Quartz.kCGEventFlagMaskAlternate,
+                "shift": _Quartz.kCGEventFlagMaskShift,
+                "cmd":   _Quartz.kCGEventFlagMaskCommand,
+            }
+            _modifier_flag = _FLAG_MAP.get(self.quick_key, 0)
+
+        def _reset_if_key_released() -> None:
+            """앱 전환 중 on_release 누락으로 _key_pressed가 고착되는 문제를 방지.
+            Quartz 실제 상태를 확인하거나, 타임아웃으로 강제 리셋."""
+            if not self._key_pressed:
+                return
+            if _IS_MAC and _HAS_QUARTZ and _modifier_flag:
+                actual = _Quartz.CGEventSourceFlagsState(
+                    _Quartz.kCGEventSourceStateCombinedSessionState
+                )
+                if not (actual & _modifier_flag):
+                    self._key_pressed   = False
+                    self._was_in_corner = False
 
         # pynput 콜백에서 직접 queue에 넣기만 함 — Qt/GUI 호출 없음
         def _enqueue(ox: int, oy: int) -> None:
@@ -239,6 +266,8 @@ class CornerMonitor(QThread):
             self._mouse_x = x
             self._mouse_y = y
             if self.trigger_mode == "corner_key":
+                # 마우스 이동마다 modifier 실제 상태 검증 (앱 전환 후 desync 복구)
+                _reset_if_key_released()
                 in_corner = self._in_any_corner(x, y)
                 if self._key_pressed and in_corner and not self._was_in_corner:
                     ox, oy = self._display_origin_for_pos(x, y)
@@ -249,9 +278,15 @@ class CornerMonitor(QThread):
             self.events_received += 1
             if not self._matches(key):
                 return
-            if self._key_pressed:  # key repeat 무시
-                return
-            self._key_pressed = True
+            if self._key_pressed:
+                # 타임아웃 fallback: on_release 누락 후 새 press를 새 입력으로 처리
+                if time.monotonic() - self._key_press_time < 1.5:
+                    return  # 1.5초 이내 → 정상 key repeat, 무시
+                # 1.5초 이상 key-up 없음 → 앱 전환 중 누락된 것으로 판단, 리셋
+                self._key_pressed   = False
+                self._was_in_corner = False
+            self._key_pressed    = True
+            self._key_press_time = time.monotonic()
             if self.trigger_mode == "key_only":
                 ox, oy = self._display_origin_for_pos(self._mouse_x, self._mouse_y)
                 _enqueue(ox, oy)

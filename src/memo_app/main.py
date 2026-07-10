@@ -269,7 +269,7 @@ def main():
 
     def _on_corner_triggered(origin_x: int, origin_y: int):
         overlay.set_display_origin(origin_x, origin_y)
-        overlay.toggle()
+        overlay.show_or_raise()
 
     monitor.corner_triggered.connect(_on_corner_triggered)
     monitor.start()

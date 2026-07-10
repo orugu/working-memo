@@ -176,19 +176,27 @@ class CornerMonitor(QThread):
         if not (_IS_MAC and _HAS_QUARTZ and self._modifier_flag_val and self.isRunning()):
             return
 
-        actual = _Quartz.CGEventSourceFlagsState(
-            _Quartz.kCGEventSourceStateCombinedSessionState
-        )
-        key_held = bool(actual & self._modifier_flag_val)
+        key_held = False
+        try:
+            actual = _Quartz.CGEventSourceFlagsState(
+                _Quartz.kCGEventSourceStateHIDSystemState
+            )
+            key_held = bool(actual & self._modifier_flag_val)
+        except Exception:
+            pass
+
+        # pynput 마우스 좌표는 앱 전환 후 stale할 수 있으므로 Qt에서 직접 조회
+        from PySide6.QtGui import QCursor
+        cur = QCursor.pos()
+        mx, my = cur.x(), cur.y()
 
         if self.trigger_mode == "corner_key":
-            is_active = key_held and self._in_any_corner(self._mouse_x, self._mouse_y)
+            is_active = key_held and self._in_any_corner(mx, my)
         else:  # key_only
             is_active = key_held
 
         if is_active and not self._poll_was_active:
-            # leading edge: 처음 조건이 충족될 때만 발동
-            ox, oy = self._display_origin_for_pos(self._mouse_x, self._mouse_y)
+            ox, oy = self._display_origin_for_pos(mx, my)
             self.corner_triggered.emit(ox, oy)
         self._poll_was_active = is_active
 

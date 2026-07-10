@@ -156,7 +156,11 @@ class CornerMonitor(QThread):
         self._drain_timer.setInterval(25)  # 25ms ≈ 40fps
         self._drain_timer.timeout.connect(self._drain_triggers)
 
-    # ── 메인 스레드에서 트리거 큐 드레인 ────────────────────────────────────
+        # macOS modifier 키 폴링 (앱 전환 후 pynput 이벤트 누락 방지)
+        self._modifier_flag_val: int = 0   # quick_key에 대응하는 Quartz flag bit
+        self._poll_was_active: bool = False # 직전 폴 결과 (leading-edge 감지용)
+
+    # ── 메인 스레드에서 트리거 큐 드레인 + macOS modifier 폴링 ─────────────
 
     def _drain_triggers(self) -> None:
         while not self._trigger_queue.empty():
@@ -166,9 +170,40 @@ class CornerMonitor(QThread):
             except Exception:
                 break
 
+        # macOS modifier 키는 pynput 이벤트가 앱 전환 후 끊길 수 있어서
+        # CGEventSourceFlagsState로 OS 상태를 직접 폴링한다.
+        # drain_timer는 메인 스레드에서 실행되므로 emit도 안전.
+        if not (_IS_MAC and _HAS_QUARTZ and self._modifier_flag_val and self.isRunning()):
+            return
+
+        actual = _Quartz.CGEventSourceFlagsState(
+            _Quartz.kCGEventSourceStateCombinedSessionState
+        )
+        key_held = bool(actual & self._modifier_flag_val)
+
+        if self.trigger_mode == "corner_key":
+            is_active = key_held and self._in_any_corner(self._mouse_x, self._mouse_y)
+        else:  # key_only
+            is_active = key_held
+
+        if is_active and not self._poll_was_active:
+            # leading edge: 처음 조건이 충족될 때만 발동
+            ox, oy = self._display_origin_for_pos(self._mouse_x, self._mouse_y)
+            self.corner_triggered.emit(ox, oy)
+        self._poll_was_active = is_active
+
     # ── QThread 시작/정지 ────────────────────────────────────────────────────
 
     def start(self, priority: QThread.Priority = QThread.Priority.InheritPriority) -> None:
+        if _IS_MAC and _HAS_QUARTZ:
+            _FLAG_MAP = {
+                "ctrl":  _Quartz.kCGEventFlagMaskControl,
+                "alt":   _Quartz.kCGEventFlagMaskAlternate,
+                "shift": _Quartz.kCGEventFlagMaskShift,
+                "cmd":   _Quartz.kCGEventFlagMaskCommand,
+            }
+            self._modifier_flag_val = _FLAG_MAP.get(self.quick_key, 0)
+        self._poll_was_active = False
         self._drain_timer.start()
         super().start(priority)
 
@@ -233,29 +268,9 @@ class CornerMonitor(QThread):
         self._was_in_corner  = False
         self._key_press_time = 0.0
 
-        # macOS: modifier key 에 대응하는 Quartz flag 비트
-        _modifier_flag: int = 0
-        if _IS_MAC and _HAS_QUARTZ:
-            _FLAG_MAP = {
-                "ctrl":  _Quartz.kCGEventFlagMaskControl,
-                "alt":   _Quartz.kCGEventFlagMaskAlternate,
-                "shift": _Quartz.kCGEventFlagMaskShift,
-                "cmd":   _Quartz.kCGEventFlagMaskCommand,
-            }
-            _modifier_flag = _FLAG_MAP.get(self.quick_key, 0)
-
-        def _reset_if_key_released() -> None:
-            """앱 전환 중 on_release 누락으로 _key_pressed가 고착되는 문제를 방지.
-            Quartz 실제 상태를 확인하거나, 타임아웃으로 강제 리셋."""
-            if not self._key_pressed:
-                return
-            if _IS_MAC and _HAS_QUARTZ and _modifier_flag:
-                actual = _Quartz.CGEventSourceFlagsState(
-                    _Quartz.kCGEventSourceStateCombinedSessionState
-                )
-                if not (actual & _modifier_flag):
-                    self._key_pressed   = False
-                    self._was_in_corner = False
+        # macOS modifier 키(ctrl/alt/shift/cmd)는 drain_timer 폴링이 처리하므로
+        # pynput on_press/on_release에서 트리거 발동을 건너뜀.
+        _use_polling = _IS_MAC and _HAS_QUARTZ and bool(self._modifier_flag_val)
 
         # pynput 콜백에서 직접 queue에 넣기만 함 — Qt/GUI 호출 없음
         def _enqueue(ox: int, oy: int) -> None:
@@ -265,9 +280,7 @@ class CornerMonitor(QThread):
             self.events_received += 1
             self._mouse_x = x
             self._mouse_y = y
-            if self.trigger_mode == "corner_key":
-                # 마우스 이동마다 modifier 실제 상태 검증 (앱 전환 후 desync 복구)
-                _reset_if_key_released()
+            if self.trigger_mode == "corner_key" and not _use_polling:
                 in_corner = self._in_any_corner(x, y)
                 if self._key_pressed and in_corner and not self._was_in_corner:
                     ox, oy = self._display_origin_for_pos(x, y)
@@ -278,11 +291,13 @@ class CornerMonitor(QThread):
             self.events_received += 1
             if not self._matches(key):
                 return
+            # macOS modifier 키: polling이 담당 → pynput에서는 state만 기록
+            if _use_polling:
+                self._key_pressed = True
+                return
             if self._key_pressed:
-                # 타임아웃 fallback: on_release 누락 후 새 press를 새 입력으로 처리
                 if time.monotonic() - self._key_press_time < 1.5:
-                    return  # 1.5초 이내 → 정상 key repeat, 무시
-                # 1.5초 이상 key-up 없음 → 앱 전환 중 누락된 것으로 판단, 리셋
+                    return  # key repeat 무시
                 self._key_pressed   = False
                 self._was_in_corner = False
             self._key_pressed    = True

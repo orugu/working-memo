@@ -865,34 +865,28 @@ class OverlayWindow(QWidget):
         self._origin_x = x + 12
         self._origin_y = y + 12
 
+    def _mac_bring_to_front(self):
+        """macOS: orderFrontRegardless()로 다른 앱 위에 창을 올린다."""
+        if platform.system() != "Darwin":
+            return
+        try:
+            import ctypes
+            import objc as _objc
+            ns_view = _objc.objc_object(c_void_p=ctypes.c_void_p(int(self.winId())))
+            ns_win = ns_view.window()
+            if ns_win:
+                ns_win.orderFrontRegardless()
+                ns_win.makeKeyWindow()
+        except Exception:
+            pass
+
     def _animated_show(self):
         self._stop_anim()
         self._refresh()
-        super().show()
-
-        # macOS: activateIgnoringOtherApps_(True)는 macOS 14+에서 무시됨.
-        # ctypes + objc로 NSView→NSWindow를 얻어 orderFrontRegardless() 호출.
-        if platform.system() == "Darwin":
-            try:
-                import ctypes, AppKit
-                import objc as _objc
-                ns_view = _objc.objc_object(
-                    c_void_p=ctypes.c_void_p(int(self.winId()))
-                )
-                ns_win = ns_view.window()
-                if ns_win:
-                    ns_win.orderFrontRegardless()
-                    ns_win.makeKeyWindow()
-            except Exception:
-                pass
-
-        self.activateWindow()
-        self.raise_()
-        self._input.setFocus()
 
         ox, oy = self._origin_x, self._origin_y
 
-        # 메뉴바 아래로 위치 보정 (availableGeometry.top() = 메뉴바 높이)
+        # 트리거된 디스플레이에서 메뉴바 아래로 위치 보정
         from PySide6.QtGui import QGuiApplication
         screen = QGuiApplication.screenAt(QPoint(ox, oy + 50)) or QGuiApplication.primaryScreen()
         if screen:
@@ -901,10 +895,24 @@ class OverlayWindow(QWidget):
                 oy = avail_top
 
         if not self.settings.animation:
+            # show() 전에 move()해야 해당 디스플레이에 바로 나타남
             self.move(ox, oy)
+            super().show()
+            self._mac_bring_to_front()
+            self.activateWindow()
+            self.raise_()
+            self._input.setFocus()
             return
 
         h = self.sizeHint().height() or self.height() or 300
+        # show() 전에 애니메이션 시작 위치로 이동 → 다른 디스플레이에서 올바르게 나타남
+        self.move(ox, oy - h)
+        super().show()
+        self._mac_bring_to_front()
+        self.activateWindow()
+        self.raise_()
+        self._input.setFocus()
+
         self._anim = QPropertyAnimation(self, b"pos", self)
         self._anim.setDuration(self.settings.anim_duration)
         self._anim.setStartValue(QPoint(ox, oy - h))

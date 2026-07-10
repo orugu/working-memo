@@ -492,7 +492,7 @@ wheels = [
 
 [[package]]
 name = "working-memo"
-version = "1.0.5"
+version = "1.0.7"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },
